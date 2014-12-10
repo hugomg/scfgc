@@ -1,0 +1,7 @@
+S .
+B _build
+EXT nonrec
+PKG core
+PKG merlin
+PKG re2
+

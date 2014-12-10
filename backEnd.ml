@@ -1,0 +1,532 @@
+open Core.Std
+open Types
+
+module VarValue : sig
+  type t = (VarId.t * int)
+  include Comparable.S with type t := t
+end = struct
+  type t = (VarId.t * int)
+  include Tuple.Comparable(VarId)(Int)
+end
+
+
+(* Convert conditionals to alias calls and variable assignments to alias mutation *)
+let cprog_to_iprog cprog =
+  (* Commands with non-trivial decisions get converted to aliases as follows:
+   *  - One mutable "state-transition" alias for each (variable,value) pair
+   *    that gets called when the variable is set to that value.
+   *  - One "action" alias for each leaf in the decision tree
+   *  - One "assignment-state" alias for each of the 2^n possible variable assignmentss
+   *
+   *  The action and assignment aliases are kept separate to support the situation when the
+   *  decision tree is unbalanced and doesn't have 2^n leaf nodes.
+  *)  
+
+  let state_machine_alias_types = Queue.create () in
+  let state_machine_alias_toplevel = Queue.create () in
+  let state_machine_cmd_toplevel = Queue.create () in
+
+  let add_fresh_alias () =
+    let aid = AliasId.fresh () in
+    Queue.enqueue state_machine_alias_types (aid, ASimple);
+    aid
+  in
+  let add_alias_toplevel aid cmds =
+    Queue.enqueue state_machine_alias_toplevel (Istmt(I_SetAlias((AliasMode.None, aid), cmds)))
+  in
+  let add_cmd_toplevel cmd =
+    Queue.enqueue state_machine_cmd_toplevel cmd
+  in
+
+
+  let possible_assignments v = 
+    let n = Map.find_exn cprog.c_var_domains v in
+    List.map (List.range 0 n) ~f:(fun i -> (v,i))
+  in
+
+  let var_value_pairs =
+    List.concat_map ~f:possible_assignments (Map.keys cprog.c_var_domains) in
+  let var_set_aliases =
+    var_value_pairs |>
+    List.map ~f:(fun vi -> (vi, add_fresh_alias ())) |>
+    VarValue.Map.of_alist_exn  in
+  let var_set_cmds =
+    var_value_pairs |>
+    List.map ~f:(fun vi -> (vi, Queue.create())) |>
+    VarValue.Map.of_alist_exn in
+
+  (* Convert a conditional statement into a decision tree of unconditional statements. *)
+  let to_decision cstmt =
+    let open Decision in
+    let all' ds = map (all ds) ~f:List.concat in
+    normalize @@ fold_cstmt cstmt ~f:(function
+        | C_I(I_Do(cmd, args)) -> 
+          return [ Istmt(I_Do(cmd, args)) ]
+        | C_I(I_Call(aref)) ->
+          return [ Istmt(I_Call(aref)) ]
+        | C_I(I_SetAlias(aref, ss)) ->
+          (all' ss) >>= (fun rr ->
+              return [ Istmt(I_SetAlias(aref, rr)) ] )
+        | C_I(I_Bind(key, ss)) ->
+          (all' ss) >>= (fun rr ->
+              return [ Istmt(I_Bind(key, rr)) ] )
+        | C_SetVar(v, i) ->
+          let aid = Map.find_exn var_set_aliases (v,i) in
+          return @@ [ Istmt(I_Call(AliasMode.None, aid)) ]
+        | C_Cond(v, branches) ->
+          Test(v, Array.map branches ~f:all' )
+      )
+  in
+
+
+  let decision_to_aliases (d : (istmt list, VarId.t) Decision.t)  = 
+
+    let d = Decision.normalize d in
+
+    let vs = Set.to_list @@ Decision.variables ~comparator:VarId.comparator d in
+
+    print_endline "--- decision ---";
+    List.iter vs ~f:(fun v ->
+      printf "  %d\n" (VarId.to_int v));
+
+    (* Transition aliases *)
+    let transition_aliases = 
+      VarValue.Map.of_alist_exn @@
+      List.concat_map vs ~f:(fun v ->
+          List.map (possible_assignments v) ~f:(fun vi ->
+              let aid = add_fresh_alias () in
+              Queue.enqueue (Map.find_exn var_set_cmds vi) @@ Istmt(I_Call(AliasMode.None, aid));
+              (vi, aid)) )
+    in
+
+    (* Action aliases *)
+    let action_d = Decision.map d ~f:(fun ss -> 
+        let aid = add_fresh_alias () in
+        add_alias_toplevel aid ss;
+        aid
+      ) in
+
+    (* Assignment-state aliases *)
+    let assignment_d =
+      Decision.all (List.map vs ~f:(fun v -> 
+          let ass = possible_assignments v in
+          Decision.test1 v (Array.of_list ass)
+        )) |>
+      Decision.map ~f:(fun ass ->  
+          let aid = add_fresh_alias () in
+          (ass, aid)
+      )
+    in
+
+    (* Effectful Assignment-state aliases 
+     * This approach plays nicer with the inliner *)
+    let assignment_eff_d =
+      Decision.map assignment_d ~f:(fun (ass, pure_aid) ->
+          let aid = add_fresh_alias () in
+          let s = Decision.find_exn action_d ass in
+          add_alias_toplevel aid [
+            Istmt(I_Call(AliasMode.None, pure_aid));
+            Istmt(I_Call(AliasMode.None, s));
+          ];
+          aid
+        )
+    in
+
+    Decision.fold assignment_d
+      ~test:(fun _ _ -> ())
+      ~leaf:(fun (v_to_x, aid) ->
+          let cmds =
+            Map.to_alist transition_aliases |>
+            List.map ~f:(fun ((v,i), tid) ->
+                let v_to_x' = List.Assoc.add v_to_x v i in
+                let (_, p_aid') = Decision.find_exn assignment_d v_to_x' in
+                let     e_aid'  = Decision.find_exn assignment_eff_d v_to_x' in
+                let s = Decision.find_exn action_d v_to_x  in
+                let s'= Decision.find_exn action_d v_to_x' in
+
+                let cmds =
+                  if (aid = p_aid') then
+                    []
+                  else
+                  if (s=s') then
+                    [Istmt(I_Call(AliasMode.None, p_aid'))]
+                  else
+                    [Istmt(I_Call(AliasMode.None, e_aid'))]
+                in
+                Istmt(I_SetAlias((AliasMode.None, tid), cmds))
+              )
+          in
+          add_alias_toplevel aid cmds
+        );
+
+    (* Initialization assignments *)
+    let initial_assignment = List.map vs ~f:(fun v ->
+        let initial_value = Map.find_exn cprog.c_var_initial_values v in
+        (v, initial_value)) in
+    let eid = Decision.find_exn assignment_eff_d initial_assignment in
+    add_cmd_toplevel (Istmt(I_Call(AliasMode.None, eid)));
+    ()
+
+  in
+
+  let cstmts_to_state_machine can_reorder stmts =
+    let ds = List.map stmts ~f:to_decision in
+    let dvs = List.map ds ~f:(fun d ->
+        (d, Decision.variables ~comparator:VarId.comparator d)) in
+
+    let reordered =
+      if can_reorder then
+        List.sort dvs ~cmp:(fun (_, v1) (_, v2) -> VarId.Set.compare v1 v2)
+      else
+        dvs
+    in
+
+    (* Optimize number of states by merging similar decision trees *)
+    reordered |>
+    List.group ~break:(fun (_, v1) (_, v2) -> not (VarId.Set.equal v1 v2)) |>
+    List.map ~f:(List.map ~f:fst) |>
+    List.map ~f:(fun ds -> Decision.map ~f:List.concat (Decision.merge_exn ds)) |>
+    List.iter ~f:decision_to_aliases
+  in
+
+  (* List bind cmds next to the aliases, to take advantage of command reordering *)
+  let (binds_and_alias_defs, stateful_toplevel) =
+    List.partition_tf cprog.c_toplevel ~f:(fun (Cstmt cmd) ->
+      match cmd with
+      | C_I(I_SetAlias _) -> true
+      | C_I(I_Bind _) -> true
+      | _ -> false ) in
+
+  cstmts_to_state_machine true  binds_and_alias_defs;
+  cstmts_to_state_machine false stateful_toplevel;
+
+  List.iter var_value_pairs ~f:(fun vi ->
+      let aid = Map.find_exn var_set_aliases vi in
+      let cmds = Map.find_exn var_set_cmds vi in
+      add_alias_toplevel aid (Queue.to_list cmds) );
+
+
+  check_iprog {
+    i_alias_types =
+      AliasId.Map.of_alist_exn @@ (
+      Map.to_alist cprog.c_alias_types @ 
+      Queue.to_list state_machine_alias_types );
+    i_toplevel =
+      Queue.to_list state_machine_alias_toplevel @
+      Queue.to_list state_machine_cmd_toplevel ;
+  }
+
+
+(*** Inlining ***)
+
+type count = {
+  ct_assignments : int AliasRef.Table.t;
+  ct_calls       : int AliasRef.Table.t;
+}
+
+let count_aliases iprog =
+  let ct_calls       = AliasRef.Table.create () in
+  let ct_assignments = AliasRef.Table.create () in
+ 
+  Map.iter iprog.i_alias_types ~f:(fun ~key:aid ~data:typ ->
+    match typ with
+    | ASimple -> (
+        Hashtbl.add_exn ct_calls ~key:(AliasMode.None, aid) ~data:0 )
+    | APlusMinus -> (
+        Hashtbl.add_exn ct_calls ~key:(AliasMode.Plus,  aid) ~data:0 ;
+        Hashtbl.add_exn ct_calls ~key:(AliasMode.Minus, aid) ~data:0 )
+    );
+  
+  List.iter iprog.i_toplevel
+    ~f:(iter_istmt ~f:(function
+      | I_Call aref         -> Hashtbl.incr ct_calls aref
+      | I_SetAlias(aref, _) -> Hashtbl.incr ct_assignments aref
+      | _ -> ()));
+
+  { ct_assignments; ct_calls }
+
+
+let arefs_with_count n tbl =
+  AliasRef.Set.of_list @@ Hashtbl.keys @@ Hashtbl.filter tbl ~f:(fun x -> x = n)
+
+
+(* If an alias is only defined once, we can lift its definition to the top 
+ * of the file without changing the program. This is useful because it can turn things
+ * like `alias foo "echo hello; alias bar baz"` into `alias foo echo hello`, which
+ * doesn't need quotes *)
+let lift_constant_aliases iprog =
+  let {ct_assignments; _} = count_aliases iprog in
+  let const_aliases = arefs_with_count 1 ct_assignments in
+
+  let liftable_cmds = Queue.create () in
+  List.iter iprog.i_toplevel
+    ~f:(iter_istmt ~f:(fun istmt -> 
+        match istmt with
+        | I_SetAlias(aref, _) ->
+          if Set.mem const_aliases aref then
+            Queue.enqueue liftable_cmds (Istmt istmt)
+        | _ -> ()
+      ));
+
+  let filtered_toplevel = List.filter_map iprog.i_toplevel
+    ~f:(filter_istmt ~f:(function
+      | I_SetAlias(aref, _)  when Set.mem const_aliases aref -> false
+      | _ -> true
+    ))
+  in
+
+  check_iprog {
+    i_alias_types = iprog.i_alias_types;
+    i_toplevel = Queue.to_list liftable_cmds @ filtered_toplevel;
+  }
+
+(* If a simple alias is constant and only called once, we can inline it *)
+let inline_step iprog =
+  let {ct_assignments; ct_calls} = count_aliases iprog in
+
+  (* +- aliases are always from keybinds so we should not mess with them *)
+  let is_simple = function 
+    | (AliasMode.None, _) -> true
+    | _ -> false
+  in
+
+  let const_aliases = arefs_with_count 1 ct_assignments in
+  let removal_candidates =
+    arefs_with_count 0 ct_calls |> Set.filter ~f:is_simple in
+  let inline_candidates  =
+    arefs_with_count 1 ct_calls |> Set.inter const_aliases |> Set.filter ~f:is_simple in
+
+  let inline_cmds = AliasRef.Table.create () in
+  List.iter iprog.i_toplevel
+    ~f:(iter_istmt ~f:(function
+        | I_SetAlias(aref, ss) ->
+            if  Set.mem inline_candidates aref then
+              Hashtbl.add_exn inline_cmds ~key:aref ~data:ss
+        | _ -> ()
+    ));
+
+
+  let inlined_refs = AliasRef.Hash_set.create () in
+  let rec inline is_bind istmt =
+    let Istmt stmt = istmt in
+    match stmt with
+    | I_Bind(k, ss) ->
+        let iss = match ss with
+          | [] -> []
+          | (s'::ss') ->
+            let is'  = inline true s' in
+            let iss' = List.map ~f:(inline false) ss' in
+            List.concat (is' :: iss')
+        in
+        [ Istmt(I_Bind(k, iss)) ]
+    | I_Call(aref) ->
+        if Set.mem inline_candidates aref then
+          let ss = Hashtbl.find_exn inline_cmds aref in
+          match ss with
+          | [] -> []
+          | (Istmt(I_Call(AliasMode.Plus, _)) :: _) when is_bind ->
+              [ istmt ]
+          | (s'::ss')-> (
+            Hash_set.strict_add_exn inlined_refs aref;
+            let is' = inline is_bind s' in
+            let iss' = List.map ~f:(inline false) ss' in
+            List.concat (is' :: iss') )
+        else
+          [ istmt ]
+    | I_SetAlias(aref, ss) ->
+        if Set.mem inline_candidates aref then
+          [ istmt ]
+        else
+          [ Istmt(I_SetAlias(aref, List.concat_map ~f:(inline false) ss)) ]
+    | I_Do(_) ->
+        [ istmt ]
+  in
+
+  let inlined_toplevel = List.concat_map iprog.i_toplevel ~f:(inline false) in
+
+  let was_removed aref =
+    (Set.mem removal_candidates aref) ||
+    (Hash_set.mem inlined_refs aref)
+  in
+
+  check_iprog {
+    i_alias_types = 
+      Map.filter iprog.i_alias_types ~f:(fun ~key:aid ~data:_ ->
+        not (was_removed (AliasMode.None, aid)) );
+    i_toplevel =
+      List.filter_map inlined_toplevel
+        ~f:(filter_istmt ~f:(function
+          | I_SetAlias(aref, _) when was_removed aref -> false
+          | _ -> true
+        ));
+  }
+
+
+let rec inline_constant_aliases iprog =
+  let arefs1 = AliasId.Set.of_list (Map.keys iprog.i_alias_types) in
+  let iprog' = inline_step iprog in
+  let arefs2 = AliasId.Set.of_list (Map.keys iprog'.i_alias_types) in
+  if AliasId.Set.equal arefs1 arefs2 then
+    iprog'
+  else
+    inline_constant_aliases iprog'
+
+
+(* Output *)
+
+type rprog = {
+  r_prefix: string;
+  r_files: (string * string list) list (* filename -> lines *)
+}
+                           
+
+module FileId = Id.Make ( )
+
+(* Rename alias ids so they are contiguous *)
+let compact_aliases iprog =
+  let old_to_new_map =
+    iprog.i_alias_types |>
+    Map.keys |>
+    List.dedup ~compare:AliasId.compare |>
+    List.sort ~cmp: AliasId.compare |>
+    List.mapi ~f:(fun i x -> (x,i)) |>
+    AliasId.Map.of_alist_exn
+  in
+  (fun x -> Map.find_exn old_to_new_map x)
+
+let has_quote s = String.contains s '"'
+
+(* AFAIK, we only need to quote spaces, semicolons and double quotes but I'd
+ * rather use a whitelist than a blacklist to be extra safe *)
+let has_special_chars s = not @@
+  String.for_all s ~f:(fun c ->
+      Char.is_alphanum c || String.mem "./_+-" c )
+
+let add_quotes s =
+  assert (not (has_quote s)); (*see note [Quote-handling] *)
+  "\"" ^ s ^ "\""
+
+let rprog_of_iprog ~prefix ~main iprog =
+
+  assert (String.length prefix > 0);
+  assert (String.for_all prefix ~f:Char.is_alpha); (* should we also allow numbers? *)
+
+  let exec_files = Queue.create () in
+
+  let main_filename = sprintf "%s/%s.cfg" prefix main in
+
+  let alias_to_int = compact_aliases iprog in
+(*  let alias_to_int = AliasId.to_int in*)
+  let serialize_alias (m, aid) = 
+    let sm = match m with
+      | AliasMode.None -> ""
+      | AliasMode.Plus -> "+"
+      | AliasMode.Minus -> "-" in
+    sprintf "%s_aa_%s_%d" sm prefix (alias_to_int aid)
+  in
+
+  let serialize_file fid =
+    sprintf "%s/f%d.cfg" prefix (FileId.to_int fid)
+  in
+
+  let cmd_to_str (cmd, args) = 
+    let argstrs = List.map args ~f:(fun arg ->
+        if arg = "" || has_special_chars arg then
+          add_quotes arg
+        else
+          arg
+      ) in
+    String.concat ~sep:" " (cmd :: argstrs)
+  in
+
+  let exec_spill cmds = 
+    let cmdstrs = List.map cmds ~f:cmd_to_str in
+    if List.exists cmdstrs ~f:has_quote then
+      let fname = serialize_file (FileId.fresh ()) in
+      Queue.enqueue exec_files (fname, cmdstrs);
+      [("exec",[fname])]
+    else
+      cmds
+  in
+
+  let seq cmds =
+    String.concat ~sep:";" (List.map ~f:cmd_to_str cmds)
+  in
+
+  let convert = fold_istmt ~f:(function
+      | I_Do(cmd, args) -> (cmd, args)
+      | I_Call(aref) -> (serialize_alias aref, [])
+      | I_SetAlias(aref, cmds) -> (
+          (* See note [Quote handling]*)
+          let no_semicolons (cmd, args) =
+            List.for_all (cmd :: args) ~f:(fun x -> not (String.mem x ';'))
+          in
+          let said = serialize_alias aref in
+          let spilt = match cmds with
+            | [] -> cmds
+            | [cmd] when no_semicolons cmd -> cmds
+            | _ -> exec_spill cmds
+          in
+          match spilt with
+          | []        -> ("alias", [said])
+          | [(x,xs)]  -> ("alias", (said :: x :: xs))
+          | (_::_::_) -> ("alias", [said; seq spilt])
+        )
+      | I_Bind(k, cmds) -> (
+          match cmds with
+          | [(x,[])] -> ("bind", [k; x])
+          | _        -> ("bind", [k; seq @@ exec_spill cmds])
+        )
+
+    )
+  in
+
+  let main_cmds =
+    List.map iprog.i_toplevel ~f:(fun stmt -> cmd_to_str (convert stmt)) in
+
+  { r_prefix = prefix;
+    r_files = (main_filename, main_cmds) :: Queue.to_list exec_files
+  }
+
+
+let print_to_stdout {r_files;_} =
+  List.iter r_files ~f:(fun (filename, lines) ->
+      printf "%s\n" filename;
+      List.iter lines ~f:(fun line ->
+          printf "  %s\n" line
+        )
+    )
+    
+    
+(*  note [Quote handling] 
+ *  =====================
+ *
+ *
+ * Arguments for autoexec commands can be quoted with double quotes. However,
+ * in the autoexec language there is no way to escape the quote character inside
+ * a string, which means that in some situations we can't write nested alias or
+ * bind commands directly. The workaround is to put the inner commands which
+ * contain quotes in a separate file and invoke them with "exec that_file.cfg",
+ * which doensn't require quotes itself.
+ * 
+ * That said, sending commands to a separate file at the first sight of nesting
+ * makes the generated output very hard to read so we try to minimize that:
+ * 
+ * 
+ * - We only have to quote commands with special characters (" " and ";")
+ * 
+ * - We don't need to quote spaces in the parameter to an alias command:
+ * 
+ *     alias xx echo foo   //this works
+ *     alias xx "echo foo" //no need to use quotes like this
+ *                         //which is what we need to do for "bind" cmds
+ * 
+ *   However, we still need to spill commands to a separate file if
+ *   there are semicolons:
+ * 
+ *     alias xx alias yy "echo 1; echo 2"
+ *     //This actually runs "echo 2" when xx is run
+ *     //and yy is only bound to "echo 1"
+ *     //which is not what you would expect from the quotes...
+ *)
+
