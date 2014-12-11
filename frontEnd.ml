@@ -399,23 +399,6 @@ let eval_bound_program
           ~t:(eval false param_values)
     in
 
-    (*
-    let do_conditional varid cases =
-      let acases = Array.of_list @@ List.map cases ~f:(fun case ->
-          let caid = AliasId.fresh () in
-          let caref = (AliasMode.None, caid) in
-          Queue.enqueue q_alias_types (caid, ASimple);
-          Queue.enqueue q_alias_defs (caref, AConst case);
-          caref
-        ) in
-      let aid = AliasId.fresh () in
-      let aref = (AliasMode.None, aid) in
-      Queue.enqueue q_alias_types (aid, ASimple);
-      Queue.enqueue q_alias_defs (aref, AVar(varid, acases));
-      aref
-    in
-*)
-
     match stmt_with_children_converted with
     | Nop -> []
     | Block stmts -> List.concat stmts
@@ -612,73 +595,99 @@ let eval_bound_program
       );
 
       (* Group keybinds by what modifier keys they use *)
-      let rec casify binds used_mods unsorted_mods cb =
+      let rec casify used_mods unsorted_mods cb =
         match unsorted_mods with
-        | [] -> (
-            match binds with
-            | [] -> []
-            | [{b_onkeydown; b_onkeyup;_}] ->
-              cb b_onkeydown b_onkeyup
-            | bs -> 
-              List.iter bs ~f:(fun b ->
-                  let keycombo = String.concat ~sep:"+" (used_mods @ [b.b_key]) in
-                  error b.b_pos (sprintf "Conflicting keybinds for %s" keycombo) );
-              []
-          )
+        | [] -> cb used_mods 
         | (m :: ms) ->
-          let (pressed, unpressed) =
-            List.partition_tf binds ~f:(fun {b_modifiers;_} ->
-                List.mem ~equal:String.equal b_modifiers m )
-          in
           let v = Map.find_exn modifier_variables m in
           [Cstmt(C_Cond(v, [|
-               casify unpressed     used_mods  ms cb;
-               casify pressed   (m::used_mods) ms cb;
+               casify     used_mods  ms cb;
+               casify (m::used_mods) ms cb;
              |]))]
       in
+
+      (* If we have any statements that should be run when a key is released
+       * then we must make sure that we only ever call "bind" once, using indirection
+       * through an alias for the multiple cases. If we call "bind" again in the middle
+       * of a "bind k +foo" call, the system forgets the old bind and doesn't call the
+       * "-foo" on release. This can happen when you release one of the modifier keys
+       * before you release the main key *)
+
 
       let keybinds_by_key = 
         keybinds |>
         List.map ~f:(fun b -> (b.b_key, b)) |>
-        String.Map.of_alist_fold ~init:[] ~f:(fun bs b -> b :: bs) |>
-        Map.to_alist in
-     
-      List.iter keybinds_by_key ~f:(fun (k, binds) ->
-          (* If we have any statements that should be run when a key is released
-           * then we must make sure that we only ever call "bind" once, using indirection
-           * through an alias for the multiple cases. If we call "bind" again in the middle
-           * of a "bind k +foo" call, the system forgets the old bind and doesn't call the
-           * "-foo" on release. This can happen when you release one of the modifier keys
-           * before you release the main key *)
-          if List.for_all binds ~f:(fun b -> List.is_empty b.b_onkeyup) then
-            let aid = AliasId.fresh () in
-            let aref = (AliasMode.None, aid) in
-            let cmds = casify binds [] mod_keys (fun onkeydown _onkeyup -> onkeydown) in
-            Queue.enqueue q_alias_types (aid, ASimple);
-            Queue.enqueue q_alias_defs (aref, cmds);
-            Queue.enqueue q_binds (k, aref)
+        String.Map.of_alist_fold ~init:[] ~f:(fun bs b -> b :: bs) in
+
+      let key_alias = 
+        Map.map keybinds_by_key ~f:(fun bs ->
+          if List.for_all bs ~f:(fun b -> List.is_empty b.b_onkeyup) then
+            Either.Left (AliasId.fresh (), Queue.create())
           else
-            let aid = AliasId.fresh() in
-            let arefp = (AliasMode.Plus, aid) in
-            let arefm = (AliasMode.Minus, aid) in
+            Either.Right (AliasId.fresh (), VarId.fresh(), Queue.create(), Queue.create() ) ) in
 
-            let cb_var = VarId.fresh () in
-            let cb_queue = Queue.create () in
-            
-            let cmdsp = casify binds [] mod_keys (fun onkeydown onkeyup ->
-              let n = Queue.length cb_queue in 
-              Queue.enqueue cb_queue onkeyup;
-              onkeydown @ [ Cstmt(C_SetVar(cb_var, n)) ] ) in
+      let state_var = VarId.fresh () in
+      let next_stateid = ref 0 in
 
-            let cmdsm = [ Cstmt(C_Cond(cb_var, Queue.to_array cb_queue)) ] in
-            
-            Queue.enqueue q_var_domains (cb_var, Queue.length cb_queue);
-            Queue.enqueue q_var_initial_values (cb_var, 0); (* any value is ok *)
-            Queue.enqueue q_alias_types (aid, APlusMinus);
-            Queue.enqueue q_alias_defs (arefp, cmdsp);
-            Queue.enqueue q_alias_defs (arefm, cmdsm);
-            Queue.enqueue q_binds (k, arefp)
-        );
+      let bigif = casify [] mod_keys (fun used_mods ->
+        let stateid = !next_stateid in
+        next_stateid := stateid + 1;
+        Map.iter keybinds_by_key ~f:(fun ~key:k ~data:bs ->
+          let bs = List.filter bs ~f:(fun b ->
+            String.Set.equal
+              (String.Set.of_list b.b_modifiers)
+              (String.Set.of_list used_mods)) in
+
+          let onkeydown, onkeyup = match bs with
+            | [] -> ([], [])
+            | [b] -> (b.b_onkeydown, b.b_onkeyup)
+            | bs -> (
+                List.iter bs ~f:(fun b ->
+                    let keycombo = String.concat ~sep:"+" (used_mods @ [b.b_key]) in
+                    error b.b_pos (sprintf "Conflicting keybinds for %s" keycombo) );
+                ([], []) ) in
+
+          match Map.find_exn key_alias k with
+          | Either.Left (_, cases) ->
+            Queue.enqueue cases onkeydown 
+          | Either.Right(_, vid, downq, upq) -> (
+              Queue.enqueue downq (onkeydown @ [Cstmt(C_SetVar(vid, stateid))]);
+              Queue.enqueue upq    onkeyup)
+          );
+        [ Cstmt(C_SetVar(state_var, stateid)) ]
+        ) in
+
+      let state_alias = AliasId.fresh () in
+      let state_ref = (AliasMode.None, state_alias) in
+      Queue.enqueue q_alias_types (state_alias, ASimple);
+      Queue.enqueue q_alias_defs (state_ref, bigif);
+
+      Map.iter modifier_variables ~f:(fun ~key:_ ~data:mvar ->
+        Queue.enqueue q_events (mvar, state_ref) );
+
+      Queue.enqueue q_var_initial_values (state_var, 0);
+      Queue.enqueue q_var_domains (state_var, !next_stateid);
+
+      Map.iter key_alias ~f:(fun ~key:k ~data:d ->
+        let aref = match d with
+        | Either.Left(aid, cases) -> (
+          let aref = (AliasMode.None, aid) in
+          Queue.enqueue q_alias_types (aid, ASimple);
+          Queue.enqueue q_alias_defs (aref, [Cstmt(C_Cond(state_var, Queue.to_array cases))]);
+          aref)
+        | Either.Right(aid, cb_var, downq, upq) -> (
+          let arefp = (AliasMode.Plus, aid) in
+          let arefm = (AliasMode.Minus, aid) in
+          Queue.enqueue q_var_initial_values (cb_var, 0);
+          Queue.enqueue q_var_domains (cb_var, !next_stateid);
+          Queue.enqueue q_alias_types (aid, APlusMinus);
+          Queue.enqueue q_alias_defs (arefp, [Cstmt(C_Cond(state_var, Queue.to_array downq)) ]);
+          Queue.enqueue q_alias_defs (arefm, [Cstmt(C_Cond(cb_var, Queue.to_array upq)) ]);
+          arefp)
+        in
+        Queue.enqueue q_binds (k, aref) );
+
+      ()
 
   in
 
