@@ -12,15 +12,11 @@ let print_prog parse_tree =
   print_sexp
 
 let print_cprog cprog = 
-  cprog.c_toplevel |>
-  List.iter ~f:(fun cstmt ->
-      sexp_of_cstmt cstmt |>
-      print_sexp)
+  print_sexp (sexp_of_cprog cprog)
 
 let print_iprog iprog = 
   let rprog = BackEnd.rprog_of_iprog ~main:"main" ~prefix:"ss" iprog in
   BackEnd.print_to_stdout rprog
-
 
 let () =
   if Array.length Sys.argv <= 1 then (
@@ -41,9 +37,9 @@ let () =
   buf.lex_curr_p <- { buf.lex_curr_p with pos_fname = filename };
 
   let onerror errname pos errinfo= 
-    printf "%s:\n%s" (pos_to_string pos) errname;
+    printf "Line %d, column %d: %s" (pos_lnum pos) (pos_cnum pos) errname;
     match errinfo with
-    | Some s -> printf ": %s\n" s
+    | Some s -> printf "\n%s\n" s
     | None -> printf "\n"
   in
 
@@ -55,11 +51,11 @@ let () =
     print_endline "CPROG =============";
     print_cprog cprog;
     let iprog = BackEnd.cprog_to_iprog cprog in
-(*    print_endline "IPROG =============";*)
-(*    print_iprog iprog;*)
+    print_endline "IPROG =============";
+    print_iprog iprog;
     let iprog = BackEnd.inline_constant_aliases iprog in
-(*    print_endline "INLINE =============";*)
-(*    print_iprog iprog;*)
+    print_endline "INLINE =============";
+    print_iprog iprog;
     let iprog = BackEnd.lift_constant_aliases iprog in
     print_endline "LIFT =============";
     print_iprog iprog;

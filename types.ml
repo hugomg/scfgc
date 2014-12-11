@@ -65,9 +65,9 @@ let compare_pos p1 p2 =
   if r <> 0 then r else
   0
 
-let pos_to_string p =
-  let open Lexing in
-  sprintf "File %S, line %d column %d" p.pos_fname p.pos_lnum (p.pos_cnum - p.pos_bol)
+let pos_fname p = p.Lexing.pos_fname
+let pos_lnum  p = p.Lexing.pos_lnum
+let pos_cnum  p = p.Lexing.pos_cnum - p.Lexing.pos_bol
 
 exception CompilationError of (pos * string) list
 
@@ -108,7 +108,7 @@ let rec sexp_of_parse_tree (ParseTree(_, st)) =
 module AliasId = Id.Make( )
 module VarId = Id.Make( )
 
-type alias_type = ASimple | APlusMinus
+type alias_type = ASimple | APlusMinus with sexp
 
 module AliasMode = struct
   module T = struct 
@@ -131,6 +131,38 @@ module AliasRef = struct
   include Tuple.Hashable(AliasMode)(AliasId)
 end
 
+(* With conditionals *)
+
+type 't cstmtf =
+  | C_SetVar of VarId.t * int
+  | C_Cond of VarId.t * 't list array
+  | C_Do of string * string list
+  | C_Call of AliasRef.t
+with sexp
+
+type cstmt =
+    Cstmt of cstmt cstmtf
+with sexp
+
+type cprog = {
+  c_var_initial_values : int VarId.Map.t;
+  c_var_domains: int VarId.Map.t;
+  c_alias_types: alias_type AliasId.Map.t;
+  c_alias_defs: cstmt list AliasRef.Map.t;
+  c_binds: AliasRef.t String.Map.t;
+  c_events: (VarId.t * AliasRef.t) list;
+  c_toplevel: cstmt list
+} with sexp
+
+let map_cstmtf ~f = function
+  | C_SetVar(v, n) -> C_SetVar(v, n)
+  | C_Cond(v, cases) -> C_Cond(v, Array.map cases ~f:(List.map ~f))
+  | C_Do(x, xs) -> C_Do(x, xs)
+  | C_Call(aref) -> C_Call(aref)
+
+let rec fold_cstmt ~f (Cstmt stmt) = 
+  f (map_cstmtf stmt ~f:(fold_cstmt ~f))
+  
 (* Without conditionals *)
 
 type 't istmtf =
@@ -176,45 +208,12 @@ let rec filter_istmt ~f (Istmt stmt) =
   if f stmt' then Some (Istmt stmt') else None
 
 
-(* With conditionals *)
-
-type 't cstmtf =
-  | C_I of 't istmtf
-  | C_SetVar of VarId.t * int
-  | C_Cond of VarId.t * 't list array
-with sexp
-
-type cstmt =
-  Cstmt of cstmt cstmtf
-with sexp
-
-type cprog = {
-  c_var_initial_values : int VarId.Map.t;
-  c_var_domains: int VarId.Map.t;
-  c_alias_types: alias_type AliasId.Map.t;
-  c_toplevel: cstmt list
-}
-
-let map_cstmtf ~f = function
-  | C_I(ist) -> C_I(map_istmtf ~f ist)
-  | C_SetVar(v, n) -> C_SetVar(v, n)
-  | C_Cond(v, cases) -> C_Cond(v, Array.map cases ~f:(List.map ~f))
-
-
-let rec fold_cstmt ~f (Cstmt stmt) = 
-  f (map_cstmtf stmt ~f:(fold_cstmt ~f))
-  
 (* Sanity check invariants *)
 
 let check_aref alias_types (amode, aid) =
   match Map.find_exn alias_types aid with
   | ASimple    -> assert (amode = AliasMode.None)
   | APlusMinus -> assert (amode = AliasMode.Plus || amode = AliasMode.Minus)
-
-let check_istmtf alias_types = function 
-  | I_Call(aref) -> check_aref alias_types aref
-  | I_SetAlias(aref, _) -> check_aref alias_types aref
-  | _ -> ()
 
 let check_cstmtf var_domains alias_types = function
   | C_SetVar(v, i) -> (
@@ -223,7 +222,36 @@ let check_cstmtf var_domains alias_types = function
   | C_Cond(v, bs) -> (
       let d = Map.find_exn var_domains v in
       assert (d = Array.length bs) )
-  | C_I(istmt) -> check_istmtf alias_types istmt
+  | C_Call(aref) -> (
+      check_aref alias_types aref)
+  | C_Do _ -> ()
+
+
+let check_cprog cprog =
+
+  let checkaref aref =
+    check_aref cprog.c_alias_types aref
+  in
+  let rec checkstmt (Cstmt stmt) =
+    check_cstmtf cprog.c_var_domains cprog.c_alias_types stmt;
+    ignore @@ map_cstmtf stmt ~f:checkstmt
+  in
+  Map.iter cprog.c_alias_defs ~f:(fun ~key:aref ~data:stmts ->
+    checkaref aref;
+    List.iter stmts ~f:checkstmt);
+  Map.iter cprog.c_binds ~f:(fun ~key:_ ~data:aref ->
+    checkaref aref );
+  List.iter cprog.c_events ~f:(fun (v, aref) ->
+      assert (Map.mem cprog.c_var_domains v);
+      checkaref aref );
+  List.iter cprog.c_toplevel ~f:checkstmt;
+
+  cprog
+
+let check_istmtf alias_types = function 
+  | I_Call(aref) -> check_aref alias_types aref
+  | I_SetAlias(aref, _) -> check_aref alias_types aref
+  | _ -> ()
 
 let check_iprog iprog =
   let rec check (Istmt stmt) =
@@ -232,12 +260,4 @@ let check_iprog iprog =
   in
   List.iter iprog.i_toplevel ~f:check;
   iprog
-
-let check_cprog cprog =
-  let rec check (Cstmt stmt) =
-    check_cstmtf cprog.c_var_domains cprog.c_alias_types stmt;
-    ignore @@ map_cstmtf stmt ~f:check
-  in
-  List.iter cprog.c_toplevel ~f:check;
-  cprog
 

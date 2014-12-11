@@ -263,72 +263,80 @@ type 'stmt keybind = {
   b_onkeyup : 'stmt list;
 }
 
-let reverse_map_exn ~comparator m =
-  m |>
-  Map.to_alist |>
-  List.map ~f:(fun (a,b) -> (b,a)) |>
-  Map.of_alist_exn ~comparator
-
-let merge_map_exn m1 m2 =
-  Map.merge m1 m2 ~f:(fun ~key:_ v ->
-    match v with
-    | `Both(_,_) -> assert false
-    | `Left x  -> Some x
-    | `Right x -> Some x)
-
 let plus_alias_re =
   let open Re2.Std in
   Re2.create_exn "^\\+"
+
+type eval_value =
+  | V_String of string
+  | V_VarId of VarId.t
+  | V_AliasId of AliasId.t
+  | V_Func
 
 let eval_bound_program
   (decls : bound_decl NameId.Map.t)
   (types : name_type NameId.Map.t)
   (bound_tree : bound_tree)
-  error
-=
+  = with_errors (fun error ->
 
   let keybind_modifiers = String.Hash_set.create () in
   let keybinds = Queue.create () in
 
-  let name_to_alias_id = 
-    Map.filter_map types ~f:(fun t ->
-      match t with T_Alias -> Some(AliasId.fresh ()) | _ -> None)
-  in
+  let q_var_initial_values = Queue.create () in
+  let q_var_domains = Queue.create () in
+  let q_alias_types = Queue.create () in
+  let q_alias_defs = Queue.create () in
+  let q_events = Queue.create () in
+  let q_binds = Queue.create () in
 
-  let alias_id_to_name =
-    reverse_map_exn name_to_alias_id ~comparator:AliasId.comparator in
+  (* --- *)
 
-  let name_to_var_id = 
-    Map.filter_map types ~f:(fun t ->
-      match t with T_Var _ -> Some(VarId.fresh ()) | _ -> None)
-  in
-
-  let var_id_to_name = 
-    reverse_map_exn name_to_var_id ~comparator:VarId.comparator in
+  let domain_to_int xs = 
+    List.mapi xs ~f:(fun i s -> (s, i)) in
 
   let get_domain nid =
     match Map.find_exn decls nid with
-    | Decl_Var(domain_strings, init) ->
-        let domain = List.mapi domain_strings ~f:(fun i s -> (s, i)) in
-        let iinit = List.Assoc.find_exn domain init ~equal:String.equal in
-        (domain, iinit)
-    | _ -> assert false (* type error *)
+    | Decl_Var(domain_strings, _) ->
+        domain_to_int domain_strings
+    | _ -> assert false
   in
 
-  let rec eval (is_top:bool) param_values (BoundTree(startpos, symbol_table, stmt)) =
-    
-    let interpolate (Interpolation(nids, func)) =
-      func (List.map nids ~f:(List.Assoc.find_exn ~equal:NameId.equal param_values))
+     let get_val pv name =
+      List.Assoc.find_exn ~equal:NameId.equal pv name
+    in
+    let get_string pv name = 
+      match get_val pv name with
+      | V_String x -> x | _ -> assert false
+    in
+    let get_varid pv name = 
+      match get_val pv name with
+      | V_VarId x -> x | _ -> assert false
+    in
+    let get_aliasid pv name = 
+      match get_val pv name with
+      | V_AliasId x -> x | _ -> assert false
     in
 
-    let do_expr (_, ip) =
-      interpolate ip
+ 
+  
+  let rec eval
+    (is_top:bool)
+    (param_values: (NameId.t * eval_value) list)
+    (BoundTree(startpos, symbol_table, stmt))
+  =
+
+    let interpolate pv (Interpolation(nids, func)) =
+      func (List.map nids ~f:(get_string pv ))
     in
 
-    let do_cmd (_, cmd) =
+    let do_expr pv (_, ip) =
+      interpolate pv ip
+    in
+
+    let do_cmd pv (_, cmd) =
       match cmd with
       | Cmd_Dyn expr ->
-          (CmdB_Primitive, interpolate expr)
+          (CmdB_Primitive, interpolate pv expr)
       | Cmd_Const name ->
           let typ =
             match (List.Assoc.find symbol_table name) with
@@ -340,47 +348,73 @@ let eval_bound_program
           in
           (typ, name)
     in
-    
+ 
+    let param_values =
+      match stmt with
+      | Let ((_,nid), decl, _) ->
+        let param =
+          match decl with
+          | Decl_Const expr -> V_String (do_expr param_values expr)
+          | Decl_Alias _ -> V_AliasId (AliasId.fresh())
+          | Decl_Var _ -> V_VarId (VarId.fresh())
+          | Decl_Macro _ -> V_Func
+        in
+        (nid, param)::param_values
+      | _ -> param_values
+    in
+
     let stmt_with_children_converted
       : (NameId.t, cmd_bind * string,  string, string, cstmt list) sstmtf
     =
       match stmt with
-      | Let (pnid, decl, scope) -> (
-        let (_, nid) = pnid in
-        let param_values' =
-          match decl with
-          | Decl_Const expr -> (nid, do_expr expr) :: param_values
-          | _ -> param_values
-        in
-        let scope' = eval is_top param_values' scope in
+      | Let ((_, nid), decl, scope) -> (
+        let scope' = eval is_top param_values scope in
         let rec_decl = 
           match decl with
-          | Decl_Alias(_) -> eval false param_values 
-          | _ -> (fun _ -> [])
+          | Decl_Alias(_) -> eval false param_values
+          | Decl_Macro _ -> (fun _ -> [])
+          | _ -> (fun _ -> assert false)
         in
         let decl' =
           map_decl decl
             ~id:snd
-            ~expr:do_expr
+            ~expr:(do_expr param_values)
             ~str:snd
             ~t:rec_decl
         in
         Let(nid, decl', scope') )
-      | Bind(_) ->
+      | Block(_) ->
         map_sstmtf stmt
           ~id:snd
-          ~cmd:do_cmd
-          ~expr:do_expr
+          ~cmd:(do_cmd param_values)
+          ~expr:(do_expr param_values)
           ~str:snd
-          ~t:(eval false param_values)
+          ~t:(eval is_top param_values)
       | _ ->
         map_sstmtf stmt
           ~id:snd
-          ~cmd:do_cmd
-          ~expr:do_expr
+          ~cmd:(do_cmd param_values)
+          ~expr:(do_expr param_values)
           ~str:snd
-          ~t:(eval is_top param_values)
+          ~t:(eval false param_values)
     in
+
+    (*
+    let do_conditional varid cases =
+      let acases = Array.of_list @@ List.map cases ~f:(fun case ->
+          let caid = AliasId.fresh () in
+          let caref = (AliasMode.None, caid) in
+          Queue.enqueue q_alias_types (caid, ASimple);
+          Queue.enqueue q_alias_defs (caref, AConst case);
+          caref
+        ) in
+      let aid = AliasId.fresh () in
+      let aref = (AliasMode.None, aid) in
+      Queue.enqueue q_alias_types (aid, ASimple);
+      Queue.enqueue q_alias_defs (aref, AVar(varid, acases));
+      aref
+    in
+*)
 
     match stmt_with_children_converted with
     | Nop -> []
@@ -388,48 +422,52 @@ let eval_bound_program
     | Cmd((cmdtyp, cmd), args) -> (
         match cmdtyp with
         | CmdB_Primitive ->
-            [ Cstmt(C_I(I_Do(cmd, args))) ]
+            [ Cstmt(C_Do(cmd, args)) ]
         | CmdB_Alias anid ->
             if not (List.is_empty args) then error startpos "Calling an alias with parameters";
-            let aid = Map.find_exn name_to_alias_id anid in
-            [ Cstmt(C_I(I_Call(AliasMode.None, aid))) ])
+            let aid = get_aliasid param_values anid in
+            [ Cstmt(C_Call(AliasMode.None, aid)) ])
     | Let(nid, decl, scope) -> (
-        let stmt'=
-          match decl with
-          | Decl_Alias(body) ->
-              let aid = Map.find_exn name_to_alias_id nid in
-              [ Cstmt(C_I(I_SetAlias((AliasMode.None, aid), body))) ]
-          | _ -> []
-        in
-        stmt' @ scope )
+        (match decl with
+        | Decl_Var(domain, init) -> (
+            let var_id = get_varid param_values nid in
+            let di = domain_to_int domain in
+            let iinit = List.Assoc.find_exn di init in
+            Queue.enqueue q_var_domains (var_id, List.length di);
+            Queue.enqueue q_var_initial_values (var_id, iinit);
+            ())
+        | Decl_Alias(body) -> (
+            let aid = get_aliasid param_values nid in
+            Queue.enqueue q_alias_types (aid, ASimple);
+            Queue.enqueue q_alias_defs ((AliasMode.None, aid), body);
+            ())
+        | _ -> ());
+        scope )
     | CallMacro(nid, params) -> (
         let param_nids, body =
           match (Map.find_exn decls nid) with
           | Decl_Macro(param_nids, body) -> (param_nids, body)
           | _ -> assert false
         in
-        let params' = List.zip_exn param_nids params in
+        let params' = List.map2_exn  param_nids params  ~f:(fun nid s -> (nid, V_String s)) in
         eval is_top (List.rev_append params' param_values) body )
     | Assign(nid, value) -> (
-        let var_id = Map.find_exn name_to_var_id nid in
-        let domain, _  = get_domain nid in
-        let ivalue = List.Assoc.find_exn domain value ~equal:String.equal in
-        [ Cstmt(C_SetVar(var_id, ivalue)) ] )
+        if is_top then
+          (error startpos "Variable assignment at toplevel"; [])
+        else
+          let var_id = get_varid param_values nid in
+          let domain = get_domain nid in
+          let ivalue = List.Assoc.find_exn domain value ~equal:String.equal in
+          [ Cstmt(C_SetVar(var_id, ivalue)) ] )
     | Increment(nid) -> (
-        let var_id = Map.find_exn name_to_var_id nid in
-        let domain, _ = get_domain nid in
+        let var_id = get_varid param_values nid in
+        let domain = get_domain nid in
         let n = List.length domain in
         let cases = List.map domain ~f:(fun (_, i) -> [Cstmt(C_SetVar(var_id, (i+1)%n))]) in
         [ Cstmt(C_Cond(var_id, Array.of_list cases)) ] )
     | Cond(ct, nid, cases) -> (
-        if is_top && ct = Cond_If then
-          error startpos "If statement at toplevel (use when instead)"
-        ;
-        if not is_top && ct = Cond_When then
-          error startpos "When statements cannot be inside alias or bind callbacks"
-        ;
-        let var_id = Map.find_exn name_to_var_id nid in
-        let domain, _ = get_domain nid in
+        let var_id = get_varid param_values nid in
+        let domain = get_domain nid in
         let ifcases = List.map domain ~f:(fun (value, _) ->
           match
             List.find_map cases ~f:(fun (pat, branch_stmts) ->
@@ -444,7 +482,20 @@ let eval_bound_program
           | None -> assert false (* non-exaustive pattern match *)
           | Some sts -> sts
         ) in
-        [ Cstmt(C_Cond(var_id, Array.of_list ifcases)) ] )
+
+        let cond_cmd = Cstmt(C_Cond(var_id, Array.of_list ifcases)) in
+        
+        match ct with
+        | Cond_If -> (
+          [ cond_cmd ])
+        | Cond_When -> (
+          if not is_top then error startpos "When statement not at toplevel (use if instead)";
+          let aid = AliasId.fresh () in
+          let aref = (AliasMode.None, aid) in
+          Queue.enqueue q_alias_types (aid, ASimple);
+          Queue.enqueue q_alias_defs (aref, [ cond_cmd ]);
+          [ Cstmt(C_Call(aref) )] )
+        )
     | Bind(keys, body) -> (
         if not is_top then
           error startpos "Must not call bind from inside an alias or bind callback"
@@ -459,13 +510,20 @@ let eval_bound_program
              * command to be run when the key is released *)
             let mplus_cmdname = 
               match plus_cmd with
-              | Cstmt(C_I(I_Do(cmdname, _))) ->
+              | Cstmt(C_Do(cmdname, _)) ->
                 Some cmdname
-              | Cstmt(C_I(I_Call(amode, aid))) ->
+              | Cstmt(C_Call(amode, aid)) -> (
                 assert (amode = AliasMode.None);
-                let plus_nid = Map.find_exn alias_id_to_name aid in
-                Some (fst @@ List.find_exn symbol_table 
-                        ~f:(fun (_name, nid) -> plus_nid = nid))
+                match 
+                  List.find param_values ~f:(fun (_, value) ->
+                    match value with
+                    | V_AliasId x when x = aid -> true
+                    | _ -> false )
+                with
+                | None -> None (* found a just-created alias from an if statement *)
+                | Some (plus_nid, _)->
+                  Some (fst @@ List.find_exn symbol_table 
+                          ~f:(fun (_name, nid) -> plus_nid = nid)) )
               | _ ->
                 None
             in
@@ -485,18 +543,20 @@ let eval_bound_program
                   else
                     let minus_cmd =
                       match plus_cmd with
-                      | Cstmt(C_I(I_Do(_, args))) ->
-                          Cstmt(C_I(I_Do(minus_cmdname, args)))
-                      | Cstmt(C_I(I_Call(amode, _))) -> (
+                      | Cstmt(C_Do(_, args)) ->
+                          Cstmt(C_Do(minus_cmdname, args))
+                      | Cstmt(C_Call(amode, _)) -> (
                           assert (amode = AliasMode.None);
                           match
                             List.Assoc.find symbol_table minus_cmdname
                               ~equal:String.equal
                           with
-                          | None -> error startpos (sprintf "Alias %s not in scope" minus_cmdname); plus_cmd
+                          | None ->
+                              error startpos (sprintf "Alias %s not in scope" minus_cmdname);
+                              plus_cmd
                           | Some minus_nid -> 
-                            let minus_aid = Map.find_exn name_to_alias_id minus_nid in
-                            Cstmt(C_I(I_Call(amode, minus_aid))) )
+                            let minus_aid = get_aliasid param_values minus_nid in
+                            Cstmt(C_Call(amode, minus_aid) ))
                       | _ ->
                           assert false
                     in
@@ -514,7 +574,9 @@ let eval_bound_program
         | (key::mods) -> (
             List.iter mods ~f:(Hash_set.add keybind_modifiers);
             if Hash_set.mem keybind_modifiers key then
-              error startpos (sprintf "Cannot use %s as a keybind - its already used as a modifier" key)
+              error
+                startpos
+                (sprintf "Cannot use %s as a keybind - its already used as a modifier" key)
             else
               Queue.enqueue keybinds {
                 b_pos = startpos;
@@ -527,160 +589,114 @@ let eval_bound_program
         [] (*keybinds aren't added to the toplevel just yet*) )
   in
 
+  let convert_keybinds 
+    (mod_keys : string list)
+    (keybinds : cstmt keybind list)
+    =
 
-  
-  let toplevel = eval true [] bound_tree in
-  
-  let var_initial_values = Map.map var_id_to_name ~f:(fun vname ->
-    let _, init = get_domain vname in init ) in
+      let modifier_variables =
+        mod_keys |>
+        List.map  ~f:(fun m -> (m, VarId.fresh ())) |>
+        String.Map.of_alist_exn in
+     
+      List.iter mod_keys ~f:(fun m ->
+        let varid = Map.find_exn modifier_variables m in
+        Queue.enqueue q_var_domains (varid, 2);
+        Queue.enqueue q_var_initial_values (varid, 0);
 
-  let var_domains = Map.map var_id_to_name ~f:(fun vname ->
-    let domain, _ = get_domain vname in  List.length domain ) in
+        let aid = AliasId.fresh () in
+        Queue.enqueue q_alias_types (aid, APlusMinus);
+        Queue.enqueue q_alias_defs ((AliasMode.Plus,  aid), [ Cstmt(C_SetVar(varid, 1)) ]);
+        Queue.enqueue q_alias_defs ((AliasMode.Minus, aid), [ Cstmt(C_SetVar(varid, 0)) ]);
+        Queue.enqueue q_binds (m, (AliasMode.Plus, aid))
+      );
 
-  let alias_types = Map.map alias_id_to_name ~f:(fun _ -> ASimple) in
-
-  let prog_without_binds = {
-    c_var_initial_values = var_initial_values;
-    c_var_domains = var_domains;
-    c_alias_types = alias_types;
-    c_toplevel = toplevel;
-  } in
-
-  (prog_without_binds, Hash_set.to_list keybind_modifiers, Queue.to_list keybinds)
-
-let convert_keybinds
-  (mod_keys : string list)
-  (keybinds : cstmt keybind list)
-  error
-  =
-
-  let modifier_variables =
-    mod_keys |>
-    List.map  ~f:(fun m -> (m, VarId.fresh ())) |>
-    String.Map.of_alist_exn in
-
-  let r_modifier_variables =
-    reverse_map_exn modifier_variables ~comparator:VarId.comparator in
-  let modifier_var_domains =
-    Map.map r_modifier_variables ~f:(fun _ -> 2) in
-  let modifier_var_initial_values =
-    Map.map r_modifier_variables ~f:(fun _ -> 0) in
-
-  let modifier_aliases = 
-    mod_keys |>
-    List.map  ~f:(fun m -> (m, AliasId.fresh ())) |>
-    String.Map.of_alist_exn in
-  
-  let r_modifier_aliases =
-    reverse_map_exn modifier_aliases ~comparator:AliasId.comparator in
-  let modifier_alias_types = 
-    Map.map r_modifier_aliases ~f:(fun _ -> APlusMinus) in
- 
-  let modifier_toplevel = List.concat_map mod_keys ~f:(fun m ->
-    let varid = Map.find_exn modifier_variables m in
-    let alias_id = Map.find_exn modifier_aliases m in
-    [
-      Cstmt(C_I(I_Bind(m, [Cstmt(C_I(I_Call(AliasMode.Plus, alias_id)))])));
-      Cstmt(C_I(I_SetAlias((AliasMode.Plus,  alias_id), [ Cstmt(C_SetVar(varid, 1)) ])));
-      Cstmt(C_I(I_SetAlias((AliasMode.Minus, alias_id), [ Cstmt(C_SetVar(varid, 0)) ])));
-    ] )
-  in
-
-  let keybinds_by_key = 
-    keybinds |>
-    List.map ~f:(fun b -> (b.b_key, b)) |>
-    String.Map.of_alist_fold ~init:[] ~f:(fun bs b -> b :: bs) |>
-    Map.to_alist in
-
-  (* Group keybinds by what modifier keys they use *)
-  let rec casify binds used_mods unsorted_mods cb =
-    match unsorted_mods with
-    | [] -> (
-      match binds with
-        | [] -> []
-        | [{b_onkeydown; b_onkeyup;_}] ->
-            cb b_onkeydown b_onkeyup
-        | bs -> 
-          List.iter bs ~f:(fun b ->
-            let keycombo = String.concat ~sep:"+" (used_mods @ [b.b_key]) in
-            error b.b_pos (sprintf "Conflicting keybinds for %s" keycombo) );
-          []
-        )
-    | (m :: ms) ->
-      let (pressed, unpressed) =
-        List.partition_tf binds ~f:(fun {b_modifiers;_} ->
-          List.mem ~equal:String.equal b_modifiers m )
+      (* Group keybinds by what modifier keys they use *)
+      let rec casify binds used_mods unsorted_mods cb =
+        match unsorted_mods with
+        | [] -> (
+            match binds with
+            | [] -> []
+            | [{b_onkeydown; b_onkeyup;_}] ->
+              cb b_onkeydown b_onkeyup
+            | bs -> 
+              List.iter bs ~f:(fun b ->
+                  let keycombo = String.concat ~sep:"+" (used_mods @ [b.b_key]) in
+                  error b.b_pos (sprintf "Conflicting keybinds for %s" keycombo) );
+              []
+          )
+        | (m :: ms) ->
+          let (pressed, unpressed) =
+            List.partition_tf binds ~f:(fun {b_modifiers;_} ->
+                List.mem ~equal:String.equal b_modifiers m )
+          in
+          let v = Map.find_exn modifier_variables m in
+          [Cstmt(C_Cond(v, [|
+               casify unpressed     used_mods  ms cb;
+               casify pressed   (m::used_mods) ms cb;
+             |]))]
       in
-      let v = Map.find_exn modifier_variables m in
-      [Cstmt(C_Cond(v, [|
-           casify unpressed     used_mods  ms cb;
-           casify pressed   (m::used_mods) ms cb;
-         |]))]
+
+      let keybinds_by_key = 
+        keybinds |>
+        List.map ~f:(fun b -> (b.b_key, b)) |>
+        String.Map.of_alist_fold ~init:[] ~f:(fun bs b -> b :: bs) |>
+        Map.to_alist in
+     
+      List.iter keybinds_by_key ~f:(fun (k, binds) ->
+          (* If we have any statements that should be run when a key is released
+           * then we must make sure that we only ever call "bind" once, using indirection
+           * through an alias for the multiple cases. If we call "bind" again in the middle
+           * of a "bind k +foo" call, the system forgets the old bind and doesn't call the
+           * "-foo" on release. This can happen when you release one of the modifier keys
+           * before you release the main key *)
+          if List.for_all binds ~f:(fun b -> List.is_empty b.b_onkeyup) then
+            let aid = AliasId.fresh () in
+            let aref = (AliasMode.None, aid) in
+            let cmds = casify binds [] mod_keys (fun onkeydown _onkeyup -> onkeydown) in
+            Queue.enqueue q_alias_types (aid, ASimple);
+            Queue.enqueue q_alias_defs (aref, cmds);
+            Queue.enqueue q_binds (k, aref)
+          else
+            let aid = AliasId.fresh() in
+            let arefp = (AliasMode.Plus, aid) in
+            let arefm = (AliasMode.Minus, aid) in
+
+            let cb_var = VarId.fresh () in
+            let cb_queue = Queue.create () in
+            
+            let cmdsp = casify binds [] mod_keys (fun onkeydown onkeyup ->
+              let n = Queue.length cb_queue in 
+              Queue.enqueue cb_queue onkeyup;
+              onkeydown @ [ Cstmt(C_SetVar(cb_var, n)) ] ) in
+
+            let cmdsm = [ Cstmt(C_Cond(cb_var, Queue.to_array cb_queue)) ] in
+            
+            Queue.enqueue q_var_domains (cb_var, Queue.length cb_queue);
+            Queue.enqueue q_var_initial_values (cb_var, 0); (* any value is ok *)
+            Queue.enqueue q_alias_types (aid, APlusMinus);
+            Queue.enqueue q_alias_defs (arefp, cmdsp);
+            Queue.enqueue q_alias_defs (arefm, cmdsm);
+            Queue.enqueue q_binds (k, arefp)
+        );
+
   in
 
-  let keybind_alias_types = Queue.create () in
-  let add_fresh_alias typ =
-    let aid = AliasId.fresh () in
-    Queue.enqueue keybind_alias_types (aid, typ);
-    aid
-  in
+  let toplevel = eval true [] bound_tree in
+  convert_keybinds (Hash_set.to_list keybind_modifiers) (Queue.to_list keybinds); 
 
-  let keybind_toplevel = Queue.create () in
-
-  List.iter keybinds_by_key ~f:(fun (k, binds) ->
-      if List.for_all binds ~f:(fun b -> List.is_empty b.b_onkeyup) then
-        let cmds = casify binds [] mod_keys (fun onkeydown _onkeyup ->
-            let cb_aid = add_fresh_alias ASimple in
-            Queue.enqueue keybind_toplevel (Cstmt(C_I(I_SetAlias((AliasMode.None, cb_aid), onkeydown))));
-            [ Cstmt(C_I(I_Call(AliasMode.None, cb_aid))) ]
-          ) in
-        Queue.enqueue keybind_toplevel @@
-          (Cstmt(C_I(I_Bind(k, cmds))))
-
-      else
-        (* If we have any statements that should be run when a key is released then we must
-         * make sure that we only ever call "bind" once, using indirection through an alias for
-         * the multiple cases. If we call "bind" again in the middle of a "bind k +foo" call, the
-         * system forgets the old bind and doesn't call the "-foo" on release. This can happen when
-         * you release one of the modifier keys before you release the main key *)
-        let bind_aid = add_fresh_alias APlusMinus in
-        let cmds = casify binds [] mod_keys (fun onkeydown onkeyup ->
-            let cb1_aid = add_fresh_alias ASimple in
-            let cb2_aid = add_fresh_alias ASimple in
-            Queue.enqueue keybind_toplevel (Cstmt(C_I(I_SetAlias((AliasMode.None, cb1_aid), onkeydown))));
-            Queue.enqueue keybind_toplevel (Cstmt(C_I(I_SetAlias((AliasMode.None, cb2_aid), onkeyup))));
-            [
-              Cstmt(C_I(I_Call(AliasMode.None, cb1_aid)));
-              Cstmt(C_I(I_SetAlias((AliasMode.Minus, bind_aid), [Cstmt(C_I(I_Call(AliasMode.None, cb2_aid)))])));
-            ]
-          ) in
-
-        Queue.enqueue keybind_toplevel @@
-          Cstmt(C_I(I_SetAlias((AliasMode.Plus, bind_aid), cmds)));
-        Queue.enqueue keybind_toplevel @@
-          Cstmt(C_I(I_Bind(k, [Cstmt(C_I(I_Call(AliasMode.Plus, bind_aid)))])))
-  );
-
-  let keybind_alias_types = 
-    AliasId.Map.of_alist_exn @@ Queue.to_list keybind_alias_types in
-
-  {
-    c_var_domains = modifier_var_domains;
-    c_var_initial_values = modifier_var_initial_values;
-    c_alias_types = merge_map_exn modifier_alias_types keybind_alias_types;
-    c_toplevel = modifier_toplevel @ Queue.to_list keybind_toplevel;
+  check_cprog {
+    c_var_initial_values = VarId.Map.of_alist_exn @@ Queue.to_list q_var_initial_values;
+    c_var_domains        = VarId.Map.of_alist_exn @@ Queue.to_list q_var_domains;
+    c_alias_types      = AliasId.Map.of_alist_exn @@ Queue.to_list q_alias_types;
+    c_alias_defs      = AliasRef.Map.of_alist_exn @@ Queue.to_list q_alias_defs;
+    c_binds             = String.Map.of_alist_exn @@ Queue.to_list q_binds;
+    c_events = Queue.to_list q_events;
+    c_toplevel = toplevel;
   }
+  )
 
 let parse_tree_to_cprog parse_tree = 
   let (decls, bound_tree) = bind_names parse_tree in
   let types = typecheck bound_tree in
-  with_errors (fun error ->
-    let prog1, modifier_keys, keybinds = eval_bound_program decls types bound_tree error in
-    let prog2 = convert_keybinds modifier_keys keybinds error in
-    check_cprog {
-      c_var_domains        = merge_map_exn prog1.c_var_domains        prog2.c_var_domains;
-      c_var_initial_values = merge_map_exn prog1.c_var_initial_values prog2.c_var_initial_values;
-      c_alias_types        = merge_map_exn prog1.c_alias_types        prog2.c_alias_types;
-      c_toplevel           = List.append   prog1.c_toplevel           prog2.c_toplevel;
-    }
-  )
+  eval_bound_program decls types bound_tree

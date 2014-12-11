@@ -71,7 +71,9 @@ val map_sstmtf:
 
 type pos = Lexing.position
 
-val pos_to_string: pos -> string
+val pos_fname : pos -> string
+val pos_lnum  : pos -> int
+val pos_cnum  : pos -> int
 
 (* Helper function so we can signal an error and keep processing 
  * to find more errors instead of immediately throwing an exception *)
@@ -115,6 +117,39 @@ module AliasRef : sig
   include Hashable.S with type t := t
 end
 
+(* With conditionals *)
+
+type 't cstmtf =
+  | C_SetVar of VarId.t * int
+  | C_Cond of VarId.t * 't list array
+  | C_Do of string * string list
+  | C_Call of AliasRef.t
+with sexp
+
+type cstmt =
+    Cstmt of cstmt cstmtf
+with sexp
+
+type cprog = {
+  c_var_initial_values : int VarId.Map.t;
+  c_var_domains: int VarId.Map.t;
+  c_alias_types: alias_type AliasId.Map.t;
+  c_alias_defs: cstmt list AliasRef.Map.t;
+  c_binds: AliasRef.t String.Map.t;
+  c_events: (VarId.t * AliasRef.t) list;
+  c_toplevel: cstmt list
+} with sexp
+
+val check_cprog: cprog -> cprog
+
+val map_cstmtf:
+  f:('a -> 'b) ->
+  'a cstmtf -> 'b cstmtf
+
+val fold_cstmt:
+  f:('r cstmtf -> 'r) ->
+  cstmt -> 'r
+
 (* Without conditionals *)
 
 type 't istmtf =
@@ -133,6 +168,8 @@ type iprog = {
   i_toplevel: istmt list;
 }
 
+val check_iprog: iprog -> iprog
+
 val map_istmtf:
   f:('a -> 'b) ->
   'a istmtf -> 'b istmtf
@@ -149,32 +186,4 @@ val filter_istmt:
   f:(istmt istmtf -> bool) ->
   istmt -> istmt option
 
-(* With conditionals *)
 
-type 't cstmtf =
-  | C_I of 't istmtf
-  | C_SetVar of VarId.t * int
-  | C_Cond of VarId.t * 't list array
-with sexp
-
-type cstmt =
-    Cstmt of cstmt cstmtf
-with sexp
-
-type cprog = {
-  c_var_initial_values : int VarId.Map.t;
-  c_var_domains: int VarId.Map.t;
-  c_alias_types: alias_type AliasId.Map.t;
-  c_toplevel: cstmt list
-}
-
-val map_cstmtf:
-  f:('a -> 'b) ->
-  'a cstmtf -> 'b cstmtf
-
-val fold_cstmt:
-  f:('r cstmtf -> 'r) ->
-  cstmt -> 'r
-
-val check_iprog: iprog -> iprog
-val check_cprog: cprog -> cprog

@@ -12,31 +12,10 @@ end
 
 (* Convert conditionals to alias calls and variable assignments to alias mutation *)
 let cprog_to_iprog cprog =
-  (* Commands with non-trivial decisions get converted to aliases as follows:
-   *  - One mutable "state-transition" alias for each (variable,value) pair
-   *    that gets called when the variable is set to that value.
-   *  - One "action" alias for each leaf in the decision tree
-   *  - One "assignment-state" alias for each of the 2^n possible variable assignmentss
-   *
-   *  The action and assignment aliases are kept separate to support the situation when the
-   *  decision tree is unbalanced and doesn't have 2^n leaf nodes.
-  *)  
-
-  let state_machine_alias_types = Queue.create () in
-  let state_machine_alias_toplevel = Queue.create () in
-  let state_machine_cmd_toplevel = Queue.create () in
-
-  let add_fresh_alias () =
-    let aid = AliasId.fresh () in
-    Queue.enqueue state_machine_alias_types (aid, ASimple);
-    aid
-  in
-  let add_alias_toplevel aid cmds =
-    Queue.enqueue state_machine_alias_toplevel (Istmt(I_SetAlias((AliasMode.None, aid), cmds)))
-  in
-  let add_cmd_toplevel cmd =
-    Queue.enqueue state_machine_cmd_toplevel cmd
-  in
+  
+  let q_alias_types   = Queue.create () in
+  let q_alias_defs    = Queue.create () in
+  let q_toplevel_cmds = Queue.create () in
 
 
   let possible_assignments v = 
@@ -48,172 +27,78 @@ let cprog_to_iprog cprog =
     List.concat_map ~f:possible_assignments (Map.keys cprog.c_var_domains) in
   let var_set_aliases =
     var_value_pairs |>
-    List.map ~f:(fun vi -> (vi, add_fresh_alias ())) |>
+    List.map ~f:(fun vi -> (vi, (AliasMode.None, AliasId.fresh ()))) |>
     VarValue.Map.of_alist_exn  in
   let var_set_cmds =
     var_value_pairs |>
     List.map ~f:(fun vi -> (vi, Queue.create())) |>
     VarValue.Map.of_alist_exn in
 
-  (* Convert a conditional statement into a decision tree of unconditional statements. *)
-  let to_decision cstmt =
-    let open Decision in
-    let all' ds = map (all ds) ~f:List.concat in
-    normalize @@ fold_cstmt cstmt ~f:(function
-        | C_I(I_Do(cmd, args)) -> 
-          return [ Istmt(I_Do(cmd, args)) ]
-        | C_I(I_Call(aref)) ->
-          return [ Istmt(I_Call(aref)) ]
-        | C_I(I_SetAlias(aref, ss)) ->
-          (all' ss) >>= (fun rr ->
-              return [ Istmt(I_SetAlias(aref, rr)) ] )
-        | C_I(I_Bind(key, ss)) ->
-          (all' ss) >>= (fun rr ->
-              return [ Istmt(I_Bind(key, rr)) ] )
-        | C_SetVar(v, i) ->
-          let aid = Map.find_exn var_set_aliases (v,i) in
-          return @@ [ Istmt(I_Call(AliasMode.None, aid)) ]
-        | C_Cond(v, branches) ->
-          Test(v, Array.map branches ~f:all' )
-      )
+
+  let to_istmt = fold_cstmt ~f:(function
+    | C_Do(x, xs) -> Istmt(I_Do(x, xs))
+    | C_Call(aref) -> Istmt(I_Call(aref))
+    | C_SetVar(varid, i) -> (
+      let aref = Map.find_exn var_set_aliases (varid, i) in
+      Istmt(I_Call(aref)) )
+
+    | C_Cond(varid, cases) -> (
+      let init = Map.find_exn cprog.c_var_initial_values varid in
+      let case_aliases = Array.map cases ~f:(fun ss ->
+            let aid = AliasId.fresh () in
+            let aref = (AliasMode.None, aid) in
+            Queue.enqueue q_alias_types (aid, ASimple);
+            Queue.enqueue q_alias_defs (aref, ss);
+            aref)
+      in
+      
+      let aid = AliasId.fresh () in
+      let aref = (AliasMode.None, aid) in
+      Queue.enqueue q_alias_types (aid, ASimple);
+      Queue.enqueue q_alias_defs (aref, [Istmt(I_Call(case_aliases.(init)))]);
+      Array.iteri case_aliases ~f:(fun i caref ->
+        let eventlist = Map.find_exn var_set_cmds (varid, i) in
+        Queue.enqueue eventlist (Istmt(I_SetAlias(aref, [Istmt(I_Call(caref))])))
+      );
+      Istmt(I_Call(aref)) ))
   in
 
 
-  let decision_to_aliases (d : (istmt list, VarId.t) Decision.t)  = 
+  Map.iter cprog.c_alias_types ~f:(fun ~key:aid ~data:typ ->
+    Queue.enqueue q_alias_types (aid, typ));
 
-    let d = Decision.normalize d in
+  Map.iter cprog.c_alias_defs ~f:(fun ~key:aref ~data:ss ->
+    Queue.enqueue q_alias_defs (aref, List.map ss ~f:to_istmt));
 
-    let vs = Set.to_list @@ Decision.variables ~comparator:VarId.comparator d in
+  List.iter cprog.c_toplevel ~f:(fun cstmt ->
+    Queue.enqueue q_toplevel_cmds (to_istmt cstmt));
+  
+  Map.iter cprog.c_binds ~f:(fun ~key:k ~data:aref ->
+    Queue.enqueue q_toplevel_cmds 
+      (Istmt(I_Bind(k, [Istmt(I_Call(aref))]))) );
 
-    print_endline "--- decision ---";
-    List.iter vs ~f:(fun v ->
-      printf "  %d\n" (VarId.to_int v));
+  List.iter cprog.c_events ~f:(fun (v, aref) ->
+    List.iter (possible_assignments v) ~f:(fun vi ->
+      let cmds = Map.find_exn var_set_cmds vi in
+      Queue.enqueue cmds (Istmt(I_Call(aref)))));
 
-    (* Transition aliases *)
-    let transition_aliases = 
-      VarValue.Map.of_alist_exn @@
-      List.concat_map vs ~f:(fun v ->
-          List.map (possible_assignments v) ~f:(fun vi ->
-              let aid = add_fresh_alias () in
-              Queue.enqueue (Map.find_exn var_set_cmds vi) @@ Istmt(I_Call(AliasMode.None, aid));
-              (vi, aid)) )
-    in
-
-    (* Action aliases *)
-    let action_d = Decision.map d ~f:(fun ss -> 
-        let aid = add_fresh_alias () in
-        add_alias_toplevel aid ss;
-        aid
-      ) in
-
-    (* Assignment-state aliases *)
-    let assignment_d =
-      Decision.all (List.map vs ~f:(fun v -> 
-          let ass = possible_assignments v in
-          Decision.test1 v (Array.of_list ass)
-        )) |>
-      Decision.map ~f:(fun ass ->  
-          let aid = add_fresh_alias () in
-          (ass, aid)
-      )
-    in
-
-    (* Effectful Assignment-state aliases 
-     * This approach plays nicer with the inliner *)
-    let assignment_eff_d =
-      Decision.map assignment_d ~f:(fun (ass, pure_aid) ->
-          let aid = add_fresh_alias () in
-          let s = Decision.find_exn action_d ass in
-          add_alias_toplevel aid [
-            Istmt(I_Call(AliasMode.None, pure_aid));
-            Istmt(I_Call(AliasMode.None, s));
-          ];
-          aid
-        )
-    in
-
-    Decision.fold assignment_d
-      ~test:(fun _ _ -> ())
-      ~leaf:(fun (v_to_x, aid) ->
-          let cmds =
-            Map.to_alist transition_aliases |>
-            List.map ~f:(fun ((v,i), tid) ->
-                let v_to_x' = List.Assoc.add v_to_x v i in
-                let (_, p_aid') = Decision.find_exn assignment_d v_to_x' in
-                let     e_aid'  = Decision.find_exn assignment_eff_d v_to_x' in
-                let s = Decision.find_exn action_d v_to_x  in
-                let s'= Decision.find_exn action_d v_to_x' in
-
-                let cmds =
-                  if (aid = p_aid') then
-                    []
-                  else
-                  if (s=s') then
-                    [Istmt(I_Call(AliasMode.None, p_aid'))]
-                  else
-                    [Istmt(I_Call(AliasMode.None, e_aid'))]
-                in
-                Istmt(I_SetAlias((AliasMode.None, tid), cmds))
-              )
-          in
-          add_alias_toplevel aid cmds
-        );
-
-    (* Initialization assignments *)
-    let initial_assignment = List.map vs ~f:(fun v ->
-        let initial_value = Map.find_exn cprog.c_var_initial_values v in
-        (v, initial_value)) in
-    let eid = Decision.find_exn assignment_eff_d initial_assignment in
-    add_cmd_toplevel (Istmt(I_Call(AliasMode.None, eid)));
-    ()
-
-  in
-
-  let cstmts_to_state_machine can_reorder stmts =
-    let ds = List.map stmts ~f:to_decision in
-    let dvs = List.map ds ~f:(fun d ->
-        (d, Decision.variables ~comparator:VarId.comparator d)) in
-
-    let reordered =
-      if can_reorder then
-        List.sort dvs ~cmp:(fun (_, v1) (_, v2) -> VarId.Set.compare v1 v2)
-      else
-        dvs
-    in
-
-    (* Optimize number of states by merging similar decision trees *)
-    reordered |>
-    List.group ~break:(fun (_, v1) (_, v2) -> not (VarId.Set.equal v1 v2)) |>
-    List.map ~f:(List.map ~f:fst) |>
-    List.map ~f:(fun ds -> Decision.map ~f:List.concat (Decision.merge_exn ds)) |>
-    List.iter ~f:decision_to_aliases
-  in
-
-  (* List bind cmds next to the aliases, to take advantage of command reordering *)
-  let (binds_and_alias_defs, stateful_toplevel) =
-    List.partition_tf cprog.c_toplevel ~f:(fun (Cstmt cmd) ->
-      match cmd with
-      | C_I(I_SetAlias _) -> true
-      | C_I(I_Bind _) -> true
-      | _ -> false ) in
-
-  cstmts_to_state_machine true  binds_and_alias_defs;
-  cstmts_to_state_machine false stateful_toplevel;
+  (* --- *)
 
   List.iter var_value_pairs ~f:(fun vi ->
-      let aid = Map.find_exn var_set_aliases vi in
+      let (amode, aid) = Map.find_exn var_set_aliases vi in
       let cmds = Map.find_exn var_set_cmds vi in
-      add_alias_toplevel aid (Queue.to_list cmds) );
+      Queue.enqueue q_alias_types (aid, ASimple);
+      Queue.enqueue q_alias_defs ((amode, aid), Queue.to_list cmds) );
 
+  let toplevel_aliases = 
+    Queue.to_list q_alias_defs |>
+    List.map ~f:(fun (aref, ss) -> Istmt(I_SetAlias(aref, ss))) in
 
   check_iprog {
-    i_alias_types =
-      AliasId.Map.of_alist_exn @@ (
-      Map.to_alist cprog.c_alias_types @ 
-      Queue.to_list state_machine_alias_types );
+    i_alias_types = AliasId.Map.of_alist_exn @@ Queue.to_list q_alias_types;
     i_toplevel =
-      Queue.to_list state_machine_alias_toplevel @
-      Queue.to_list state_machine_cmd_toplevel ;
+      toplevel_aliases @
+      Queue.to_list q_toplevel_cmds ;
   }
 
 
@@ -380,7 +265,6 @@ type rprog = {
 }
                            
 
-module FileId = Id.Make ( )
 
 (* Rename alias ids so they are contiguous *)
 let compact_aliases iprog =
@@ -407,6 +291,8 @@ let add_quotes s =
   "\"" ^ s ^ "\""
 
 let rprog_of_iprog ~prefix ~main iprog =
+
+  let module FileId = Id.Make ( ) in
 
   assert (String.length prefix > 0);
   assert (String.for_all prefix ~f:Char.is_alpha); (* should we also allow numbers? *)
