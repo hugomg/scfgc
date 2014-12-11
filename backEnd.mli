@@ -8,12 +8,9 @@ val inline_constant_aliases: iprog -> iprog
 
 (* Output format *)
 
-type rprog = {
-  r_prefix: string;
-  r_files: (string * string list) list (* filename -> lines *)
-}
-                                                                                                   
-val rprog_of_iprog : prefix:string -> main:string -> iprog -> rprog
+type rprog = 
+  string list * (string * string list) list
+
+val rprog_of_iprog : prefix:string -> iprog -> rprog
 
 val print_to_stdout : rprog -> unit
-(*val print_to_files  : rprog -> unit*)

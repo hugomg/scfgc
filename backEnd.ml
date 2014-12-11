@@ -259,12 +259,8 @@ let rec inline_constant_aliases iprog =
 
 (* Output *)
 
-type rprog = {
-  r_prefix: string;
-  r_files: (string * string list) list (* filename -> lines *)
-}
-                           
-
+type rprog = 
+  string list * (string * string list) list
 
 (* Rename alias ids so they are contiguous *)
 let compact_aliases iprog =
@@ -290,16 +286,14 @@ let add_quotes s =
   assert (not (has_quote s)); (*see note [Quote-handling] *)
   "\"" ^ s ^ "\""
 
-let rprog_of_iprog ~prefix ~main iprog =
+let rprog_of_iprog ~prefix iprog =
 
   let module FileId = Id.Make ( ) in
 
   assert (String.length prefix > 0);
-  assert (String.for_all prefix ~f:Char.is_alpha); (* should we also allow numbers? *)
+  assert (String.for_all prefix ~f:(fun c -> c = '_' || Char.is_alphanum c));
 
   let exec_files = Queue.create () in
-
-  let main_filename = sprintf "%s/%s.cfg" prefix main in
 
   let alias_to_int = compact_aliases iprog in
 (*  let alias_to_int = AliasId.to_int in*)
@@ -312,7 +306,8 @@ let rprog_of_iprog ~prefix ~main iprog =
   in
 
   let serialize_file fid =
-    sprintf "%s/f%d.cfg" prefix (FileId.to_int fid)
+    let basename = sprintf "f%d.cfg" (FileId.to_int fid) in
+    (basename, prefix^"/"^basename) (* dota is OK with forward-slash separators *)
   in
 
   let cmd_to_str (cmd, args) = 
@@ -328,9 +323,9 @@ let rprog_of_iprog ~prefix ~main iprog =
   let exec_spill cmds = 
     let cmdstrs = List.map cmds ~f:cmd_to_str in
     if List.exists cmdstrs ~f:has_quote then
-      let fname = serialize_file (FileId.fresh ()) in
-      Queue.enqueue exec_files (fname, cmdstrs);
-      [("exec",[fname])]
+      let (basename, relname) = serialize_file (FileId.fresh ()) in
+      Queue.enqueue exec_files (basename, cmdstrs);
+      [("exec",[relname])]
     else
       cmds
   in
@@ -370,20 +365,18 @@ let rprog_of_iprog ~prefix ~main iprog =
   let main_cmds =
     List.map iprog.i_toplevel ~f:(fun stmt -> cmd_to_str (convert stmt)) in
 
-  { r_prefix = prefix;
-    r_files = (main_filename, main_cmds) :: Queue.to_list exec_files
-  }
+  (main_cmds, Queue.to_list exec_files)
 
 
-let print_to_stdout {r_files;_} =
-  List.iter r_files ~f:(fun (filename, lines) ->
+let print_to_stdout (main_cmds, helper_files) =
+  let all_files = ("MAIN", main_cmds) :: helper_files in
+  List.iter all_files ~f:(fun (filename, lines) ->
       printf "%s\n" filename;
       List.iter lines ~f:(fun line ->
           printf "  %s\n" line
         )
     )
-    
-    
+
 (*  note [Quote handling] 
  *  =====================
  *

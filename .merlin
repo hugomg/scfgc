@@ -4,4 +4,4 @@ EXT nonrec
 PKG core
 PKG merlin
 PKG re2
-
+PKG fileutils
