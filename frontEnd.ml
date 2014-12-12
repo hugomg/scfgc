@@ -5,8 +5,7 @@ open Types
 
 module NameId = Id.Make( )
 
-type expr =
-  | Interpolation of NameId.t list * (string list -> string)
+type expr = NameId.t Interpolation.t
 
 type cmd =
   | Cmd_Const of string
@@ -39,12 +38,6 @@ type name_type =
 
 (* --------- *)
 
-
-let interpolate_re =
-  let open Re2.Std in
-  Re2.create_exn "\\$([A-Za-z_0-9]*)"
-
-
 let bind_names parse_tree = with_errors (fun error ->
 
   let decltable = NameId.Table.create () in
@@ -59,20 +52,11 @@ let bind_names parse_tree = with_errors (fun error ->
       | None -> error pos (sprintf "Undefined name %s" name); noone
     in
 
-    let interpolate_string pos rawstr =
-      let open Re2.Std in
-      let ms = Re2.get_matches_exn interpolate_re rawstr in
-      let names =
-        List.dedup ~compare:String.compare @@
-        List.map ms ~f:(fun m -> Re2.Match.get_exn ~sub:(`Index 1) m) in
-      let nids  = List.map names ~f:(lookup_name pos) in
-      Interpolation(nids, fun values ->
-          let name_to_value = List.zip_exn names values in
-          Re2.replace_exn interpolate_re rawstr ~f:(fun m ->
-              let name = Re2.Match.get_exn ~sub:(`Index 1) m in
-              List.Assoc.find_exn name_to_value name
-            ))
+    let interpolate_string pos raw_str =
+      Interpolation.of_string raw_str |>
+      Interpolation.map ~f:(fun name -> lookup_name pos name)
     in
+ 
     let do_id (pos, name) =
       (pos, lookup_name pos name)
     in
@@ -82,7 +66,7 @@ let bind_names parse_tree = with_errors (fun error ->
     in
 
     let do_cmd (pos, name) =
-      (* Commands with no quotes and nt interpolations
+      (* Commands with no quotes and no interpolations
        * are potentially an alias call *)
       let cmd =
         match name with
@@ -90,7 +74,7 @@ let bind_names parse_tree = with_errors (fun error ->
         | Either.Left s ->
           let ip = interpolate_string pos s in
           match ip with
-          | Interpolation([], _) -> Cmd_Const s
+          | Interpolation.I(s, []) -> Cmd_Const s
           | _ -> Cmd_Dyn ip
       in
       (pos, cmd)
@@ -228,8 +212,8 @@ let typecheck bound_tree = with_errors (fun error ->
 
 
     let check_expr (pos, expr) =
-      let Interpolation(nids, _) = expr in
-      List.iter nids ~f:(fun nid ->
+      let Interpolation.I(_, xs) = expr in
+      List.iter xs ~f:(fun (_,_,nid) ->
           ignore @@ assert_is_const (pos, nid)
         )
     in
@@ -262,10 +246,6 @@ type 'stmt keybind = {
   b_onkeydown : 'stmt list;
   b_onkeyup : 'stmt list;
   }
-
-let plus_alias_re =
-  let open Re2.Std in
-  Re2.create_exn "^\\+"
 
 type eval_value =
   | V_String of string
@@ -325,8 +305,9 @@ let eval_bound_program
     (BoundTree(startpos, symbol_table, stmt))
   =
 
-    let interpolate pv (Interpolation(nids, func)) =
-      func (List.map nids ~f:(get_string pv ))
+    let interpolate pv ii =
+      Interpolation.map ii ~f:(get_string pv) |>
+      Interpolation.to_string
     in
 
     let do_expr pv (_, ip) =
@@ -516,15 +497,10 @@ let eval_bound_program
               match mplus_cmdname with
               | None -> []
               | Some plus_cmdname -> (
-                  let open Re2.Std in
-                  let minus_cmdname =
-                    Re2.replace_exn
-                      plus_alias_re
-                      plus_cmdname
-                      ~f:(fun _ -> "-") in
-                  if plus_cmdname = minus_cmdname then
+                  if plus_cmdname.[0] <> '+' then
                     []
                   else
+                    let minus_cmdname = "-" ^ String.drop_prefix plus_cmdname 1 in
                     let minus_cmd =
                       match plus_cmd with
                       | Cstmt(C_Do(_, args)) ->
