@@ -320,9 +320,15 @@ let rprog_of_iprog ~prefix iprog =
     String.concat ~sep:" " (cmd :: argstrs)
   in
 
+  let seq cmds =
+    String.concat ~sep:";" (List.map ~f:cmd_to_str cmds)
+  in
+
   let exec_spill cmds = 
+    (* The source interpreter can't nest quotes and can't handle
+     * individual commands with more than 499 characters (we stop at 300 to be safe) *)
     let cmdstrs = List.map cmds ~f:cmd_to_str in
-    if List.exists cmdstrs ~f:has_quote then
+    if List.exists cmdstrs ~f:has_quote || String.length (seq cmds) >= 300 then
       let (basename, relname) = serialize_file (FileId.fresh ()) in
       Queue.enqueue exec_files (basename, cmdstrs);
       [("exec",[relname])]
@@ -330,9 +336,6 @@ let rprog_of_iprog ~prefix iprog =
       cmds
   in
 
-  let seq cmds =
-    String.concat ~sep:";" (List.map ~f:cmd_to_str cmds)
-  in
 
   let convert = fold_istmt ~f:(function
       | I_Do(cmd, args) -> (cmd, args)
