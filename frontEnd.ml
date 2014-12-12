@@ -477,6 +477,7 @@ let eval_bound_program
           let aref = (AliasMode.None, aid) in
           Queue.enqueue q_alias_types (aid, ASimple);
           Queue.enqueue q_alias_defs (aref, [ cond_cmd ]);
+          Queue.enqueue q_events (var_id, aref);
           [ Cstmt(C_Call(aref) )] )
         )
     | Bind(keys, body) -> (
