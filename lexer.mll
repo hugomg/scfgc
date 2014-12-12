@@ -10,8 +10,10 @@ let update_line_number lexbuf =
   String.iter (Lexing.lexeme lexbuf) ~f:(fun c ->
       if c = '\n' then Lexing.new_line lexbuf
     )
+
 }
 
+let newline = '\r'?'\n'
 let whitespace =  [' ' '\t' '\r' '\n']
 let alpha = ['A'-'Z' 'a'-'z']
 let num   = ['0'-'9']
@@ -27,13 +29,10 @@ let unquoted = (alpha|num|'_'|'+'|'-'|'$')
 let quoted = [^'"''\n']
 
 rule token = parse
-  | whitespace {
-      update_line_number lexbuf;
-      token lexbuf }
+  | newline { update_line_number lexbuf; NEWLINE }
+  | whitespace { token lexbuf }
 
-  | "//" {
-      do_comment lexbuf;
-      token lexbuf }
+  | "//" { do_comment lexbuf }
   
   | "alias"     { ALIAS }
   | "bind"      { BIND }
@@ -72,8 +71,6 @@ rule token = parse
 
 
 and do_comment = parse
-  | ('\n' | eof) {
-    update_line_number lexbuf;
-    () }
-  | _  {
-    do_comment lexbuf }
+  | eof { EOF }
+  | newline { update_line_number lexbuf; NEWLINE }
+  | _ { do_comment lexbuf }
