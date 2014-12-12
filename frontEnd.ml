@@ -626,12 +626,21 @@ let eval_bound_program
           else
             Either.Right (AliasId.fresh (), VarId.fresh(), Queue.create(), Queue.create() ) ) in
 
+      (* This optimization to turn keybind aliases into flat conditionals instead of
+       * nested ones is really complicated and error prone. I should probably revert to
+       * something simpler *)
       let state_var = VarId.fresh () in
       let next_stateid = ref 0 in
+      let state_var_initial_value = ref None in
 
       let bigif = casify [] mod_keys (fun used_mods ->
         let stateid = !next_stateid in
         next_stateid := stateid + 1;
+
+        if List.is_empty used_mods then
+          state_var_initial_value := Some stateid
+        ;
+
         Map.iter keybinds_by_key ~f:(fun ~key:k ~data:bs ->
           let bs = List.filter bs ~f:(fun b ->
             String.Set.equal
@@ -665,8 +674,11 @@ let eval_bound_program
       Map.iter modifier_variables ~f:(fun ~key:_ ~data:mvar ->
         Queue.enqueue q_events (mvar, state_ref) );
 
-      Queue.enqueue q_var_initial_values (state_var, 0);
-      Queue.enqueue q_var_domains (state_var, !next_stateid);
+      match !state_var_initial_value with
+      | None -> assert false
+      | Some x -> (
+        Queue.enqueue q_var_initial_values (state_var, x);
+        Queue.enqueue q_var_domains (state_var, !next_stateid));
 
       Map.iter key_alias ~f:(fun ~key:k ~data:d ->
         let aref = match d with
