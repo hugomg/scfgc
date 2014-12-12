@@ -1,2 +1,2 @@
 exception LexerError of bytes
-val token : Lexing.lexbuf -> Parser.token
+val create: unit -> Lexing.lexbuf -> Parser.token

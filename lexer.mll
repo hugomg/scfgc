@@ -28,9 +28,9 @@ let unquoted = (alpha|num|'_'|'+'|'-'|'$')
 (* Characters that can appear in quoted strings *)
 let quoted = [^'"''\n']
 
-rule token = parse
+rule lex_token tokenbuf = parse
   | newline { update_line_number lexbuf; NEWLINE }
-  | whitespace { token lexbuf }
+  | whitespace { lex_token tokenbuf lexbuf }
 
   | "//" { do_comment lexbuf }
   
@@ -43,7 +43,7 @@ rule token = parse
   | "increment" { INCREMENT }
 
   | '{'  { LBRACE } 
-  | '}'  { RBRACE }
+  | '}'  { Queue.enqueue tokenbuf RBRACE; NEWLINE }
   | '('  { LPAREN }
   | ')'  { RPAREN }
   | ','  { COMMA }
@@ -74,3 +74,18 @@ and do_comment = parse
   | eof { EOF }
   | newline { update_line_number lexbuf; NEWLINE }
   | _ { do_comment lexbuf }
+
+{
+
+(* I want to make semicolons optional before a closing brace but I don't want
+ * to have the semicolons be a statement separator, like in Ocaml or Pascal,
+ * because that would require semicolons after if statements. So what I do is
+ * hack the lexer so closing braces return a statement terminator token in addition to
+ * the close-brace token *)
+let create () =
+  let buf = Queue.create () in
+  fun lexbuf ->
+    match Queue.dequeue buf with
+    | None -> lex_token buf lexbuf
+    | Some tk -> tk
+}

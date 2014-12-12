@@ -50,7 +50,7 @@ let () =
   in_buf.lex_curr_p <- { in_buf.lex_curr_p with pos_fname = in_filename };
 
   try
-    let parse_tree = Parser.prog Lexer.token in_buf in
+    let parse_tree = Parser.prog (Lexer.create()) in_buf in
     let cprog = FrontEnd.parse_tree_to_cprog parse_tree in
     (*print_endline "CPROG =============";
     print_cprog cprog;*)
