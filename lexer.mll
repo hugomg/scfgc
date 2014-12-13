@@ -1,7 +1,7 @@
 {
 open Parser
 open Lexing
-open Core.Std
+open Core_kernel.Std
 
 exception LexerError of string
 

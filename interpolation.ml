@@ -1,4 +1,4 @@
-open Core.Std
+open Core_kernel.Std
 
 type 'a t = I of string * (int * int * 'a) list
 

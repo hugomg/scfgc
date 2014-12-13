@@ -60,7 +60,7 @@ block:
   | stmts_or_decls=list(stmt_or_decl) {
       (* We wrap extra "Block" stmts around declarations that are mixed
        * with other statements instead of being at the top of the block *)
-      let open Core.Std in
+      let open Core_kernel.Std in
       let to_block pos xs =
         match xs with
         | [x] -> x (* no need for a Block node when there is a single stmt *)
@@ -106,7 +106,7 @@ raw_decl:
     RBRACE (*no s*)
     m_init=ioption(varinit) terminator
       { 
-        let open Core.Std in
+        let open Core_kernel.Std in
         match domain with
         | [] -> raise (CompilationError([
             ($startpos(domain), "Empty variable domain")

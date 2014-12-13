@@ -1,4 +1,4 @@
-open Core.Std
+open Core_kernel.Std
 
 (* The syntax trees for the parser and the typechecker have a similar
  * structure so we define them using a common functor that is heaviliy parameterized:

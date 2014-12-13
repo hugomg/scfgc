@@ -1,4 +1,4 @@
-open Core.Std
+open Core_kernel.Std
 
 (* A datatype to represent strings with $xxx patterns that get substituted *)
 

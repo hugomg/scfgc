@@ -1,4 +1,4 @@
-open Core.Std
+open Core_kernel.Std
 
 module type S = sig
   type t with sexp
