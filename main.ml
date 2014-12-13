@@ -42,7 +42,7 @@ let () =
   ;
 
   let in_chan = 
-    try In_channel.create in_filename
+    try In_channel.create ~binary:false in_filename
     with Sys_error(msg) -> exit_with_error "Error" None (Some msg)
   in
  
@@ -92,7 +92,7 @@ let () =
     in
 
     List.iter out_files ~f:(fun (filename, lines) ->
-        Out_channel.with_file filename ~f:(fun file ->
+        Out_channel.with_file ~binary:false filename ~f:(fun file ->
             Out_channel.output_lines file lines
           ));
 
