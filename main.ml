@@ -34,7 +34,8 @@ let () =
 
   let in_filename =
     try Sys.argv.(1)
-    with Invalid_argument _ -> "autoexec.scfg"
+    with Invalid_argument _ -> 
+      exit_with_error "Usage" None (Some "main.exe INPUT_FILE.scfg")
   in
   
   if not (FilePath.check_extension in_filename "scfg") then
