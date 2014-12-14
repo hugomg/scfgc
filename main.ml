@@ -6,21 +6,21 @@ open Types
 let print_sexp sx =
   print_endline (Sexp.to_string_hum ~indent:2 sx)
 
-let print_prog parse_tree = 
+let print_prog parse_tree =
   parse_tree |>
   sexp_of_parse_tree |>
   print_sexp
 
-let print_cprog cprog = 
+let print_cprog cprog =
   print_sexp (sexp_of_cprog cprog)
 
-let print_iprog iprog = 
+let print_iprog iprog =
   let rprog = BackEnd.rprog_of_iprog ~prefix:"ss" iprog in
   BackEnd.print_to_stdout rprog
 
-let () =
+let compile in_filename =
 
-  let exit_with_error errname pos errinfo = 
+  let exit_with_error errname pos errinfo =
     (match pos with
     | None -> ()
     | Some pos -> fprintf stderr "Line %d, column %d:\n" (pos_lnum pos) (pos_cnum pos));
@@ -32,21 +32,16 @@ let () =
     exit 1
   in
 
-  let in_filename =
-    try Sys.argv.(1)
-    with Invalid_argument _ -> 
-      exit_with_error "Usage" None (Some "main.exe INPUT_FILE.scfg")
-  in
-  
   if not (FilePath.check_extension in_filename "scfg") then
-    exit_with_error "Error" None (Some "The input file must have a \".scfg\" extension")
+    exit_with_error "Error" None
+      (Some (sprintf "`%s' does not have a .scfg extension" in_filename))
   ;
 
-  let in_chan = 
+  let in_chan =
     try In_channel.create ~binary:false in_filename
     with Sys_error(msg) -> exit_with_error "Error" None (Some msg)
   in
- 
+
   let in_buf = Lexing.from_channel in_chan in
   in_buf.lex_curr_p <- { in_buf.lex_curr_p with pos_fname = in_filename };
 
@@ -65,14 +60,14 @@ let () =
     (*print_endline "LIFT =============";
     print_iprog iprog;*)
 
-    (* Now we know there will be no compilation errors so 
+    (* Now we know there will be no compilation errors so
      * its OK to overwrite any output files *)
     let main_filename = FilePath.replace_extension in_filename "cfg" in
     let outdir = FilePath.chop_extension in_filename in
     let basename = FilePath.basename outdir in
 
     (* the filename is used to generate internal alias names *)
-    if not (String.for_all basename ~f:(fun c -> Char.is_alphanum c || c = '_')) 
+    if not (String.for_all basename ~f:(fun c -> Char.is_alphanum c || c = '_'))
     then
       exit_with_error "Error" None
         (Some "The name of the input file must contain only letters, numbers and underscores")
@@ -86,7 +81,7 @@ let () =
       FileUtil.mkdir outdir
     ;
 
-    let out_files = 
+    let out_files =
       (main_filename, main_lines) ::
       List.map helper_files ~f:(fun (b, lines) ->
         (FilePath.concat outdir b, lines))
@@ -107,4 +102,25 @@ let () =
         List.iter errs ~f:(fun (pos, msg) ->
           exit_with_error "Error" (Some pos) (Some msg))
 
-  
+
+(* ----- *)
+open Cmdliner
+
+
+let filename =
+  let doc = "Source .scfg file" in
+  Arg.(required @@ pos 0 (some @@ file) None @@ info [] ~doc ~docv:"filename")
+
+let cmd =
+  let doc = "Super Source Config compiler" in
+  let man = [] in
+  Term.(
+    pure compile $ filename,
+    info "scfgc" ~version:"0.1" ~doc ~man)
+
+let () =
+  match Term.eval cmd with
+  | `Error _ -> exit 1
+  | `Version | `Help | `Ok _ -> exit 0
+
+

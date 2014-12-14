@@ -9,10 +9,11 @@ ocamlbuild \
   -tag annot \
   -tag debug \
   -tag short_paths \
-  -cflags "-w A-4-33-40-41-42-43-34-44" \
+  -cflags "-w A-4-33-40-41-42-43-34-44-48" \
   -cflags -strict-sequence \
   -j 5 \
   -use-menhir \
+  -pkg cmdliner \
   -pkg core_kernel \
   -pkg fileutils \
   $@

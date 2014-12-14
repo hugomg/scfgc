@@ -1,5 +1,6 @@
 S .
 B _build
 EXT nonrec
+PKG cmdliner
 PKG core_kernel
 PKG fileutils
