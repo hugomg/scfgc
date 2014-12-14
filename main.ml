@@ -18,6 +18,18 @@ let print_iprog iprog =
   let rprog = BackEnd.rprog_of_iprog ~prefix:"ss" iprog in
   BackEnd.print_to_stdout rprog
 
+(* Our lexer can handle UTF-8 encoded files as long as all the non-ASCII characters
+ * are inside comments or quoted strings. However, it can't deal with the Byte-Order-Mark
+ * that Notepad and some other windows editors might add to the file *)
+let skip_utf8_BOM chan =
+  let bom = "\xEF\xBB\xBF" in
+  let bom_len = String.length bom in
+  let orig_pos = In_channel.pos chan in
+  let buf = Bytes.make bom_len '\x00' in
+  let n = In_channel.input chan ~buf ~pos:0 ~len:bom_len in
+  if not (n = bom_len && String.equal bom (Bytes.to_string buf)) then
+    In_channel.seek chan orig_pos
+
 let compile in_filename =
 
   let exit_with_error errname pos errinfo =
@@ -41,6 +53,7 @@ let compile in_filename =
     try In_channel.create ~binary:false in_filename
     with Sys_error(msg) -> exit_with_error "Error" None (Some msg)
   in
+  skip_utf8_BOM in_chan;
 
   let in_buf = Lexing.from_channel in_chan in
   in_buf.lex_curr_p <- { in_buf.lex_curr_p with pos_fname = in_filename };
