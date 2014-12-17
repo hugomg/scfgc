@@ -259,7 +259,6 @@ let eval_bound_program
   (bound_tree : bound_tree)
   = with_errors (fun error ->
 
-  let keybind_modifiers = String.Hash_set.create () in
   let keybinds = Queue.create () in
 
   let q_var_initial_values = Queue.create () in
@@ -532,76 +531,90 @@ let eval_bound_program
         (match List.rev ks with
         | [] -> error startpos "Empty keybind declaration"
         | (key::mods) -> (
-            List.iter mods ~f:(Hash_set.add keybind_modifiers);
-            if Hash_set.mem keybind_modifiers key then
-              error
-                startpos
-                (sprintf "Cannot use %s as a keybind - its already used as a modifier" key)
-            else
-              Queue.enqueue keybinds {
-                b_pos = startpos;
-                b_modifiers = mods;
-                b_key = key;
-                b_onkeyup = onkeyup;
-                b_onkeydown = onkeydown;
-              }
-        ));
+            Queue.enqueue keybinds {
+              b_pos = startpos;
+              b_modifiers = mods;
+              b_key = key;
+              b_onkeyup = onkeyup;
+              b_onkeydown = onkeydown;
+            }
+          ));
         [] (*keybinds aren't added to the toplevel just yet*) )
   in
 
-  let convert_keybinds 
-    (mod_keys : string list)
-    (keybinds : cstmt keybind list)
-    =
+  let convert_keybinds (keybinds : cstmt keybind list) =
 
-      let modifier_variables =
-        mod_keys |>
-        List.map  ~f:(fun m -> (m, VarId.fresh ())) |>
-        String.Map.of_alist_exn in
-     
-      List.iter mod_keys ~f:(fun m ->
-        let varid = Map.find_exn modifier_variables m in
-        Queue.enqueue q_var_domains (varid, 2);
-        Queue.enqueue q_var_initial_values (varid, 0);
-
-        let aid = AliasId.fresh () in
-        Queue.enqueue q_alias_types (aid, APlusMinus);
-        Queue.enqueue q_alias_defs ((AliasMode.Plus,  aid), [ Cstmt(C_SetVar(varid, 1)) ]);
-        Queue.enqueue q_alias_defs ((AliasMode.Minus, aid), [ Cstmt(C_SetVar(varid, 0)) ]);
-        Queue.enqueue q_binds (m, (AliasMode.Plus, aid))
-      );
-
-      (* Group keybinds by what modifier keys they use *)
-      let rec casify binds used_mods unsorted_mods cb =
-        match unsorted_mods with
-        | [] -> (
-            match binds with
-            | [] -> []
-            | [{b_onkeydown; b_onkeyup;_}] ->
-              cb b_onkeydown b_onkeyup
-            | bs ->
+    if
+      (* Has duplicate keybinds? *)
+      keybinds |>
+      List.map ~f:(fun b -> 
+          (* " " was our separator back in source code form so its OK to reuse here... *)
+          let s = String.concat ~sep:" " (b.b_key :: b.b_modifiers) in (s, b) ) |>
+      String.Map.of_alist_fold ~init:[] ~f:(fun xs x -> x :: xs) |>
+      Map.data |>
+      List.map ~f:(function
+          | [] -> assert false
+          | [_] -> false
+          | bs -> (
               List.iter bs ~f:(fun b ->
-                  let keycombo = String.concat ~sep:"+" (used_mods @ [b.b_key]) in
+                  let keycombo = String.concat ~sep:"+" (b.b_modifiers @ [b.b_key]) in
                   error b.b_pos (sprintf "Conflicting keybinds for %s" keycombo) );
-              []
-          )
-        | (m :: ms) ->
-          let (pressed, unpressed) =
-            List.partition_tf binds ~f:(fun {b_modifiers;_} ->
-                List.mem ~equal:String.equal b_modifiers m )
-          in
-          let v = Map.find_exn modifier_variables m in
-          [Cstmt(C_Cond(v, [|
-               casify unpressed     used_mods  ms cb;
-               casify pressed   (m::used_mods) ms cb;
-             |]))]
+              true)
+        ) |>
+      List.fold_left ~init:false ~f:((||))
+    then
+      ()
+    else (
+
+      let mod_keys binds = 
+        binds |>
+        List.map ~f:(fun b -> String.Set.of_list b.b_modifiers) |>
+        String.Set.union_list |>
+        String.Set.to_list
       in
 
-      let keybinds_by_key = 
-        keybinds |>
-        List.map ~f:(fun b -> (b.b_key, b)) |>
-        String.Map.of_alist_fold ~init:[] ~f:(fun bs b -> b :: bs) in
+      let modifier_variables =
+        mod_keys keybinds |>
+        List.map  ~f:(fun m ->
+          let varid = VarId.fresh () in
+          Queue.enqueue q_var_domains (varid, 2);
+          Queue.enqueue q_var_initial_values (varid, 0);
+          (m, varid)
+          ) |>
+        String.Map.of_alist_exn in
 
+      let keybinds_by_key = 
+        List.fold_left
+          keybinds
+          ~init: (Map.map modifier_variables ~f:(fun _ -> []))
+          ~f:(fun m b ->
+            Map.add_multi m ~key:b.b_key ~data:b)
+      in
+
+      (* Group keybinds by what modifier keys they use *)
+      let casify binds cb =
+        let rec go used_mods unsorted_mods binds = 
+          match unsorted_mods with
+          | [] -> (
+              match binds with
+              | (_::_::_) -> assert false
+              | [] -> []
+              | [{b_onkeydown; b_onkeyup;_}] ->
+                cb b_onkeydown b_onkeyup
+            )
+          | (m :: ms) ->
+            let (pressed, unpressed) =
+              List.partition_tf binds ~f:(fun {b_modifiers;_} ->
+                  List.mem ~equal:String.equal b_modifiers m )
+            in
+            let v = Map.find_exn modifier_variables m in
+            [Cstmt(C_Cond(v, [|
+                 go     used_mods  ms unpressed;
+                 go (m::used_mods) ms pressed;
+               |]))]
+        in
+        go [] (mod_keys binds) binds
+      in
 
       Map.iter keybinds_by_key ~f:(fun ~key:k ~data:binds ->
           (* If we have any statements that should be run when a key is released
@@ -610,42 +623,74 @@ let eval_bound_program
            * of a "bind k +foo" call, the system forgets the old bind and doesn't call the
            * "-foo" on release. This can happen when you release one of the modifier keys
            * before you release the main key *)
-          if List.for_all binds ~f:(fun b -> List.is_empty b.b_onkeyup) then
+
+          let is_modifier_key = Map.mem modifier_variables k in
+          let has_onkeydown_binds = List.exists binds ~f:(fun b -> not (List.is_empty b.b_onkeyup)) in
+
+          if (not is_modifier_key) && (not has_onkeydown_binds) then (
+            (* as an optimization, don't create the "+" aliases here *)
             let aid = AliasId.fresh () in
             let aref = (AliasMode.None, aid) in
-            let cmds = casify binds [] mod_keys (fun onkeydown _onkeyup -> onkeydown) in
+            let cmds = casify binds (fun onkeydown _onkeyup -> onkeydown) in
             Queue.enqueue q_alias_types (aid, ASimple);
             Queue.enqueue q_alias_defs (aref, cmds);
             Queue.enqueue q_binds (k, aref)
-          else
+          ) else (
+
             let aid = AliasId.fresh() in
             let arefp = (AliasMode.Plus, aid) in
             let arefm = (AliasMode.Minus, aid) in
 
-            let cb_var = VarId.fresh () in
-            let cb_queue = Queue.create () in
+            let cb_var = 
+              if has_onkeydown_binds then
+                Some(VarId.fresh (), Queue.create ())
+              else
+                None
+            in
+            
+            let (mod_down, mod_up) = 
+              match Map.find modifier_variables k with
+              | None -> ([], [])
+              | Some v -> ([Cstmt(C_SetVar(v, 1))], [Cstmt(C_SetVar(v, 0))])
+            in
 
-            let cmdsp = casify binds [] mod_keys (fun onkeydown onkeyup ->
-              let n = Queue.length cb_queue in
-              Queue.enqueue cb_queue onkeyup;
-              onkeydown @ [ Cstmt(C_SetVar(cb_var, n)) ] ) in
+            let cmdsp = casify binds (fun onkeydown onkeyup ->
+              onkeydown @ match cb_var with
+                | None -> []
+                | Some (v, queue) -> (
+                    let n = Queue.length queue in
+                    Queue.enqueue queue onkeyup;
+                    [ Cstmt(C_SetVar(v, n)) ] ) )
+            in
 
-            let cmdsm = [ Cstmt(C_Cond(cb_var, Queue.to_array cb_queue)) ] in
+            let cmdsm =
+              match cb_var with
+              | None -> []
+              | Some(v, q) ->
+                [ Cstmt(C_Cond(v, Queue.to_array q)) ]
+            in
 
-            Queue.enqueue q_var_domains (cb_var, Queue.length cb_queue);
-            Queue.enqueue q_var_initial_values (cb_var, 0); (* any value is ok *)
+            (match cb_var with
+              | None -> ()
+              | Some(v, q) -> (
+                Queue.enqueue q_var_domains (v, Queue.length q);
+                Queue.enqueue q_var_initial_values (v, 0); (* any value is ok *)
+              ));
+
             Queue.enqueue q_alias_types (aid, APlusMinus);
-            Queue.enqueue q_alias_defs (arefp, cmdsp);
-            Queue.enqueue q_alias_defs (arefm, cmdsm);
+            Queue.enqueue q_alias_defs (arefp, mod_down @ cmdsp);
+            Queue.enqueue q_alias_defs (arefm, mod_up @ cmdsm);
             Queue.enqueue q_binds (k, arefp)
+          )
         );
 
       ()
+    )
 
   in
 
   let toplevel = eval true [] bound_tree in
-  convert_keybinds (Hash_set.to_list keybind_modifiers) (Queue.to_list keybinds); 
+  convert_keybinds (Queue.to_list keybinds); 
 
   check_cprog {
     c_var_initial_values = VarId.Map.of_alist_exn @@ Queue.to_list q_var_initial_values;
@@ -656,7 +701,7 @@ let eval_bound_program
     c_events = Queue.to_list q_events;
     c_toplevel = toplevel;
   }
-  )
+)
 
 let parse_tree_to_cprog parse_tree = 
   let (decls, bound_tree) = bind_names parse_tree in
