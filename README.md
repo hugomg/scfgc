@@ -32,6 +32,8 @@ Alternatively, you can invoke scfgc from the command line. Run `scfgc.exe --help
 Commands
 --------
 
+First of all, go to my [github releases page](https://github.com/hugomg/scfgc/releases) to download the executable for the scfg compiler.
+
 A command consists of a command name followed by zero or more arguments. The argument list extends
 until the next newline.
 
@@ -295,14 +297,14 @@ The "_" in the switch statements is a wildcard pattern that matches any value. I
         AGHS1 -> hpbars(550)
         AGHS2 -> hpbars(550)
         AGHS3 -> hpbars(650)
-   }
+    }
    
-   bind "ALT SPACE 1"  switch hp { LVL1  -> hp := DEF; _ -> hp := LVL1  }
-   bind "ALT SPACE 2"  switch hp { LVL2  -> hp := DEF; _ -> hp := LVL2  }
-   bind "ALT SPACE 3"  switch hp { LVL3  -> hp := DEF; _ -> hp := LVL3  }
-   bind "ALT SPACE 4"  switch hp { AGHS1 -> hp := DEF; _ -> hp := AGHS1 }
-   bind "ALT SPACE 5"  switch hp { AGHS2 -> hp := DEF; _ -> hp := AGHS2 }
-   bind "ALT SPACE 6"  switch hp { AGHS3 -> hp := DEF; _ -> hp := AGHS3 }
+    bind "ALT SPACE 1"  switch hp { LVL1  -> hp := DEF; _ -> hp := LVL1  }
+    bind "ALT SPACE 2"  switch hp { LVL2  -> hp := DEF; _ -> hp := LVL2  }
+    bind "ALT SPACE 3"  switch hp { LVL3  -> hp := DEF; _ -> hp := LVL3  }
+    bind "ALT SPACE 4"  switch hp { AGHS1 -> hp := DEF; _ -> hp := AGHS1 }
+    bind "ALT SPACE 5"  switch hp { AGHS2 -> hp := DEF; _ -> hp := AGHS2 }
+    bind "ALT SPACE 6"  switch hp { AGHS3 -> hp := DEF; _ -> hp := AGHS3 }
    
 Future improvements
 -------------------
