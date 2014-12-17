@@ -50,6 +50,7 @@ s:
   | s NEWLINE {()}
 
 terminator:
+  | EOF {()}
   | NEWLINE s {()}
   | SEMICOLON s {()}
 
