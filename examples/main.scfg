@@ -1,0 +1,253 @@
+// The keybinds on this file are based on a great script 
+// that /u/loopuleasa posted on Reddit
+
+
+// So we can use the ALT key ourselves:
+dota_remap_alt_key "`"
+
+developer 0
+dota_disable_range_finder 0
+
+// ----------------------------
+
+define cast(slowcast,fastcast,id, hotkey){
+    var quick : {ON,OFF}
+
+    bind $hotkey {
+        switch quick {
+            ON  -> $slowcast $id
+            OFF -> $fastcast $id
+        }
+    }
+    
+    bind "SPACE $hotkey" $slowcast $id
+    
+    bind "ALT $hotkey" 
+    {$slowcast $id; $slowcast $id}
+    
+    bind "ALT SPACE $hotkey" {increment quick}
+}
+
+
+define spell(spell_id, hotkey) {
+    cast(dota_ability_execute, dota_ability_quickcast, $spell_id, $hotkey)
+}
+
+define item(item_id, hotkey) {
+    cast(dota_item_execute, dota_item_quick_cast, $item_id, $hotkey)
+}
+
+define peek(x, y) dota_camera_set_lookatpos $x $y
+
+alias +rune_check {
+    var x :{0,1};
+    switch x {
+        0 -> peek(-2273, 1800)
+        1 -> peek(3035, -2350)
+    }
+    increment x
+}
+alias -rune_check {
+    dota_recent_event; dota_recent_event; +dota_camera_follow
+}
+
+alias +follow_hero {+dota_camera_follow; -dota_camera_follow; +dota_camera_follow }
+alias -follow_hero {-dota_camera_follow}
+
+alias upgrade_courier {
+    toggleshoppanel
+    shop_nav_to_tab 0
+    shop_select_itemrow 8
+    toggleshoppanel
+}
+
+
+alias orb_toggle {
+    // One-click autocast toggle for orbs.
+    // Since no hero has more than 1 autocastable ability we can just tell the game to toggle all skills
+    dota_ability_autocast 0
+    dota_ability_autocast 1
+    dota_ability_autocast 2
+    dota_ability_autocast 3
+    dota_ability_autocast 4
+    dota_ability_autocast 5
+}
+
+
+// KEYBINDS 
+
+spell(0, Q) 
+spell(1, W)
+spell(2, E)
+spell(3, T) // opt-1
+spell(4, G) // opt-2
+spell(5, R) //ultimate
+
+item(0, D) //top-left
+item(1, F) //top
+item(2, Z) //top-right
+item(3, X) //bot-left
+item(4, C) //bot
+item(5, V) //bot-right
+
+
+bind F1 { +rune_check }
+bind F2 { dota_select_courier }
+bind F3 { dota_courier_deliver }
+bind F4 { dota_purchase_quickbuy }
+bind F5 { gameui_activate }
+bind F8 { exec "autoexec.cfg" }
+bind F9 { dota_pause }
+bind F12 {jpeg}
+
+{
+    var netgraph : {0,1}
+    when netgraph {
+        0 -> net_graph 0
+        1 -> net_graph 1
+    }
+    bind F10  increment netgraph
+}
+
+{
+    define cg(n) { +dota_control_group $n }
+    bind 1 +dota_camera_follow
+    bind 2 cg(1)
+    bind 3 cg(2)
+    bind 4 cg(3)
+    bind 5 cg(4)
+    bind 6 cg(5)
+    bind 7 cg(6)
+    bind 8 cg(7)
+    bind 9 cg(8)
+    bind 0 cg(9)
+}
+
+bind TAB dota_cycle_selected
+
+bind "A" mc_attack
+bind "S" dota_stop
+
+bind "Y" dota_ability_learn_mode
+bind "H" dota_learn_stats
+bind "B" toggleshoppanel
+
+bind "I" inspectheroinworld
+
+bind "[" use_item_client player_loadout action_item
+bind "]" use_item_client current_hero taunt
+
+bind "SPACE F1" {dota_glyph}
+bind "SPACE F2" {stash_grab_all}
+bind "SPACE F3" {dota_courier_burst}
+bind "SPACE F4" {dota_purchase_quickbuy}
+
+bind "SPACE 1" +follow_hero
+bind "SPACE 2" dota_select_all_others
+bind "SPACE 3" dota_select_al
+bind "SPACE 5" orb_toggle
+
+bind "SPACE A" mc_move
+bind "SPACE S" dota_hold
+
+bind "SPACE TAB" +showscores
+
+{
+    define autoattack(i){
+        dota_player_units_auto_attack_after_spell $i
+    }
+
+    var aa : {OFF, ON}
+    when aa {
+        ON  -> autoattack(1)
+        OFF -> autoattack(0)
+    }
+    bind "ALT SPACE A" { increment aa }
+}
+
+
+// Healthbar-resetting script, based on a script posted by /u/palish on Reddit.
+// To change change size of the healthbars separator to a new one, 
+// hold ALT+SPACE and type the number followed by "=". To change the healthbar
+// separator to represent some ammount ot magic damage, type "-" instead.. 
+
+{
+
+    define hp dota_health_per_vertical_marker
+    define set_hp(n) { $hp $n }
+    define increment_hp_by(n) { incrementvar $hp 1 1000000 $n }
+    define multiply_hp_by(n)  { multvar      $hp 1 1000000 $n }
+
+    var TYPING : {TRUE, FALSE} := FALSE
+    
+    when TYPING {
+        TRUE  -> dota_hud_healthbars 0
+        FALSE -> dota_hud_healthbars 3
+    }
+       
+    // The game crashes if we set the hp_bars to 0
+    // so we always store "hp + 1" instead of "hp"
+    
+    alias init_hp {
+        set_hp(1)
+    }
+    
+    alias mult_hp_by_10 {
+        multiply_hp_by(10)
+        increment_hp_by(-9)
+    }
+    
+    alias finalize_hp {
+        increment_hp_by(-1)
+    }
+    
+    
+    alias start_typing {
+        switch TYPING {
+            TRUE -> {}
+            FALSE -> {
+                TYPING := TRUE
+                init_hp
+            }        
+        }
+    }
+    
+    alias stop_typing {
+        switch TYPING {
+            FALSE -> {}
+            TRUE -> {
+                finalize_hp
+                TYPING := FALSE
+            }
+        }
+    }
+    
+    
+    define bind_digit(n){
+        bind "alt space $n" {
+            start_typing
+            mult_hp_by_10
+            increment_hp_by($n)
+        }
+    }
+    
+    set_hp(250)
+    
+    bind_digit(0)
+    bind_digit(1)
+    bind_digit(2)
+    bind_digit(3)
+    bind_digit(4)
+    bind_digit(5)
+    bind_digit(6)
+    bind_digit(7)
+    bind_digit(8)
+    bind_digit(9)    
+    bind "alt space =" { multiply_hp_by("1.0000"); stop_typing } // pure damage multiplier
+    bind "alt space -" { multiply_hp_by("0.7500"); stop_typing } // magic damage multiplier
+    
+    alias +typing_mod { }
+    alias -typing_mod { stop_typing }
+    bind alt   +typing_mod
+    bind space +typing_mod
+}

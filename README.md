@@ -23,8 +23,11 @@ In Windows explorer, drag your scfg source file on top of the icon for the scfgc
 scfg will convert that scfg file into a cfg file of the same name and place it next to the scfg source file.
 You can then add a line on your autoexec.cfg file to call your script when on Dota2 startup.
 
-Alternatively, you can invoke scfgc from the command line.
-Run `scfgc.exe --help` for usage instructions.
+For more complex scripts, scfg might not be able to compile your scfg file into a single cfg file.
+In these cases, it will also generate a folder with the same base name as your scfg file, containing
+helper files for your script.
+
+Alternatively, you can invoke scfgc from the command line. Run `scfgc.exe --help` for usage instructions.
 
 Commands
 --------
