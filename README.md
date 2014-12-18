@@ -1,5 +1,4 @@
-Super Source Config
-===================
+#Super Source Config
 
 Super Source Config is an extension of Dota2's config-file scripting language
 that is aimed at making it easier to write complex, stateful, autoexec scripts.
@@ -16,12 +15,13 @@ Its main features are:
 
 All with a familiar and easy to learn syntax. Interested? Lets take a closer look!
 
-How to use scfg
----------------
+##How to use scfg
 
-In Windows explorer, drag your scfg source file on top of the icon for the scfgc.exe exetutable.
+First of all, go to my [github releases page](https://github.com/hugomg/scfgc/releases) to download the executable for the scfg compiler.
+
+In Windows explorer, drag your scfg source file on top of the icon for the scfgc.exe executable.
 scfg will convert that scfg file into a cfg file of the same name and place it next to the scfg source file.
-You can then add a line on your autoexec.cfg file to call your script when on Dota2 startup.
+You can then add a line on your autoexec.cfg file to call your script when Dota2 starts up.
 
 For more complex scripts, scfg might not be able to compile your scfg file into a single cfg file.
 In these cases, it will also generate a folder with the same base name as your scfg file, containing
@@ -29,10 +29,7 @@ helper files for your script.
 
 Alternatively, you can invoke scfgc from the command line. Run `scfgc.exe --help` for usage instructions.
 
-Commands
---------
-
-First of all, go to my [github releases page](https://github.com/hugomg/scfgc/releases) to download the executable for the scfg compiler.
+##Commands
 
 A command consists of a command name followed by zero or more arguments. The argument list extends
 until the next newline.
@@ -52,17 +49,15 @@ for representing special characters using backslashes.
 Unquoted arguments can contain only numbers, letters, underscores and the + and - signs. This is a
 difference from the native cfg language, where almost every character can appear outside of quotes.
 
-Comments
---------
+###Comments
 
 Comments begin with two forward slashes and continue until the end of the line.
 
     //This is a comment
     
-There is no syntax for multiline comments.
+There is no syntax for multi-line comments.
 
-`bind` command
---------------
+##Keybinds
 
 The `bind` command creates new keybinds. It receives a key name and a command and sets things up
 so that the command is run whenever you press that key.
@@ -95,7 +90,7 @@ are hardcoded by Dota 2. As for ALT, you can use it if you want but to do so you
 `dota_remap_alt` command somewhere in your autoexec.
 
      // This changes the key used for pings to "`",
-     // freeing the original alt key for custom keybinds.
+     // freeing the ALT key for custom keybinds.
      dota_remap_alt "`"
 
 
@@ -105,11 +100,11 @@ native cfg language:
     bind "SPACE TAB" +showscores
 
 If the command name of a keybind callback starts with a "+" then that command is run when the key
-is pressed down and the "-" version of the command (-showscores, in this case) is run when the key
+is pressed down and the "-" version of the command (`-showscores`, in this case) is run when the key
 is released. scfgc takes special precautions to make sure this works correctly if you have composite
 keybinds (this is something people often get wrong when coding by hand)
 
-**Keybind caveats**
+###Keybind caveats
 
 1. Keybinds must be defined at the toplevel of your program and are immutable once defined. You
    cannot define new keybinds from inside another keybind's callback or the body of an alias.
@@ -121,14 +116,13 @@ keybinds (this is something people often get wrong when coding by hand)
    file binding on "SPACE Q" then you can't simultaneously have a separate config file that binds
    to "SPACE W" because one file will overwrite the SPACE bind from the other file.
 4. Keybinds defined in a config file don't show up next to your ability and item icons when playing
-   so its easy toforget what button is for what in the middle of the game. One workaround you can do is
+   so its easy to forget what button is for what in the middle of the game. One workaround you can do is
    bind all items and skills to "ALT+X" combinations in the settings GUI. If you remapped ALT 
    using the `dota_remap_alt` command then those will actually mean "`+X", which doesn't conflict
    with the keybinds from the config file.
 
    
-Aliases
--------
+##Aliases
 
 Aliases associate a name with a list of commands. The syntax is similar to the one for `bind`,
 accepting either a single command or a list of them between braces:
@@ -164,17 +158,16 @@ define it in a native cfg file instead of an scfg one.
 Another difference from native aliases is in that scfg aliases are immutable, similarly to how
 binds are immutable. If you try to redefine an alias what you will actually end up doing is 
 creating a separate alias definition that shadows the original definition in the inner alias' scope.
-If you want to change an alias' behaviour, the way to do it is with variables, which we cover
-in the next session.
+If you want to change an alias' behavior, the way to do it is with variables, which we cover
+in the next section.
 
-Variables
----------
+##Variables
 
-Sometimes, we want to make our keybinds "stateful". For example, consider a keybind where the
-firt time you press it it moves the camera to the top rune and the second time you press it it
-moves the camera to the bot rune. IN the native cfg language, the only  way to do this is
+Sometimes, we want to make our keybinds stateful. For example, consider a keybind where the
+first time you press it it moves the camera to the top rune and the second time it
+moves the camera to the bot rune. In the native cfg language, the only  way to do this is
 by writing a spaggetti ball of aliases that redefine each other when they are called, which
-is tricky to write and error prone.
+is tricky to write and very error prone.
 
 The scfg approach to this is to make aliases immutable and use explicit variables for the sateteful
 stuff:
@@ -192,13 +185,12 @@ Variables in scfg are lexically scoped, just like aliases, and always have a fin
 of values they accept. You can use a `switch` statement to write commands that do different things
 depending on the value of a variable and assignment statements with `:=`to change the value of a variable.
 
-By default, variables are initialized with the first value in their enum (in the previous example, TOP)
+By default, variables are initialized with the first value in their enum (in the previous example, `TOP`)
 but you can write an explicit initializer if you want.
 
     var x:{TOP, BOT} := BOT
 
-Increment
----------
+###Increment statement
 
 The "toggling" operation we did in the rune-camera keybind is very common so there is special support
 for it with the increment primitive.
@@ -212,8 +204,7 @@ for it with the increment primitive.
         increment x
     }
 
-Events
-------
+###Events
 
 Another feature with variables is "events", which let you associate a command to be run whenever a variable
 changes value. For, example these commands toggle the visibility of the network graph:
@@ -230,10 +221,9 @@ we press F10 the value of `ng` will change and the event handler will run the co
 
 Similarly to the `bind` command, `when` commands can only be issued at the toplevel of the program.
 
-Constant definitions and Macros
--------------------------------
+##Constant definitions and Macros
 
-The scfg language has a simple macro system to reduce the ammount of copy-pasting needed to write config files.
+The scfg language has a simple macro system to reduce the amount of copy-pasting needed to write config files.
 For example, consider the case where we want to bind a spell to Q, the quick cast version of that spell to
 "SPACE Q" and the self cast version to "ALT Q". One way to do that is to be explicit and write the "Q"
 in all 3 keybinds.
@@ -273,8 +263,7 @@ In this example, we are defining 18 different keybinds using only 6 lines, witho
 copy-paste and repeat ourselves. If we decide to change the keybinds from QWER to ASDF there is only
 one place we need to change.
 
-A taste of everything
----------------------
+##A taste of everything
 
 This final example illustrates something that would be very tricky to write by hand
 without the scfg language to help. Its a helper for culling blade HP markers that works in a
@@ -306,7 +295,6 @@ The "_" in the switch statements is a wildcard pattern that matches any value. I
     bind "ALT SPACE 5"  switch hp { AGHS2 -> hp := DEF; _ -> hp := AGHS2 }
     bind "ALT SPACE 6"  switch hp { AGHS3 -> hp := DEF; _ -> hp := AGHS3 }
    
-Future improvements
--------------------
+##Future improvements
 
 scfg is still very experimental so any suggestions and comments are very welcome!
