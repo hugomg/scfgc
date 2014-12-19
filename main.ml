@@ -30,7 +30,8 @@ let skip_utf8_BOM chan =
   if not (n = bom_len && String.equal bom (Bytes.to_string buf)) then
     In_channel.seek chan orig_pos
 
-let compile quiet in_filename =
+
+let compile in_filename =
 
   let exit_with_error errname pos errinfo =
     (match pos with
@@ -41,13 +42,6 @@ let compile quiet in_filename =
     | None -> ()
     | Some s -> fprintf stderr ": %s" s);
     fprintf stderr "\n";
-    if not quiet then (
-      (* Windows Explorer closes scfgc's terminal window, hiding errors,
-       * unless we prompt the user for input. *)
-      fprintf stderr "Press ENTER to continue:";
-      Out_channel.flush stderr;
-      ignore @@ In_channel.input_byte stdin
-    );
     exit 1
   in
 
@@ -128,11 +122,6 @@ let compile quiet in_filename =
 (* ----- *)
 open Cmdliner
 
-let quiet = 
-  let doc = "Skip the \"Press any key to continue\" prompt if there is an error. \
-            Use this option if you are running scfgc from the command line." in
-  Arg.(value @@ flag @@ info ["q"; "quiet"] ~doc ~docv:"quiet")
-
 let filename =
   let doc = "Source .scfg file" in
   Arg.(required @@ pos 0 (some @@ file) None @@ info [] ~doc ~docv:"filename")
@@ -148,12 +137,10 @@ let cmd =
     `P "Send bugs and suggestions to https://github.com/hugomg/scfgc";
   ] in
   Term.(
-    pure compile $ quiet $ filename,
-    info "scfgc" ~version:"0.2" ~doc ~man)
+    pure compile $ filename,
+    info "scfgc" ~version:"0.3" ~doc ~man)
 
 let () =
   match Term.eval cmd with
   | `Version | `Help | `Ok _ -> exit 0
   | `Error _ -> exit 1
-
-

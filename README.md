@@ -17,17 +17,21 @@ All with a familiar and easy to learn syntax. Interested? Lets take a closer loo
 
 ##How to use scfg
 
-First of all, go to my [github releases page](https://github.com/hugomg/scfgc/releases) to download the executable for the scfg compiler.
+First of all, go to my [github releases page](https://github.com/hugomg/scfgc/releases) to download the executable for the scfg compiler. The zip should include two files, scfg.exe and scfg.bat
 
-In Windows explorer, drag your scfg source file on top of the icon for the scfgc.exe executable.
-scfg will convert that scfg file into a cfg file of the same name and place it next to the scfg source file.
+If you know how to use the command line you can call scfg.exe directly.
+Run `scfgc.exe --help` for usage isntructions.
+
+If you don't know how to use the command line you can use scfgc from Windows Explorer.
+First, create a scfg script with the ".scfg" file extension. You can find some example files
+[here](https://github.com/hugomg/scfgc/tree/master/examples).
+Then, in the Windows Explorer window, drag the icon for the scfg file and drop it on top of the icon for the scfg.bat file. (Droping on top of scfg.exe also works, but won't show any error messages if a problem occurs).
+If everything goes right, scfgc  should convert your scfg file into a cfg file of the same name and place it next to the scfg source file.
 You can then add a line on your autoexec.cfg file to call your script when Dota2 starts up.
 
 For more complex scripts, scfg might not be able to compile your scfg file into a single cfg file.
 In these cases, it will also generate a folder with the same base name as your scfg file, containing
 helper files for your script.
-
-Alternatively, you can invoke scfgc from the command line. Run `scfgc.exe --help` for usage instructions.
 
 ##Commands
 
