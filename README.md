@@ -91,11 +91,11 @@ then it quick casts our first spell, instead of regular casting it as our other 
 
 In theory you can use any key as a the trigger or modifier, except for SHIFT and CTRL, which
 are hardcoded by Dota 2. As for ALT, you can use it if you want but to do so you must issue a
-`dota_remap_alt` command somewhere in your autoexec.
+`dota_remap_alt_key` command somewhere in your autoexec.
 
      // This changes the key used for pings to "`",
      // freeing the ALT key for custom keybinds.
-     dota_remap_alt "`"
+     dota_remap_alt_key "`"
 
 
 Finally, you can bind commands to be run when a key is released similarly to how its done in the
