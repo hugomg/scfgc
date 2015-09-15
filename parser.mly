@@ -1,6 +1,5 @@
 %{
 open Types
-open Either
 %}
 
 (* keywords *)
@@ -72,15 +71,15 @@ block:
           ~init: []
           ~f:(fun x rest ->
               match x with
-              | Left (pos, decl) -> [ ParseTree(pos, decl (to_block pos rest)) ]
-              | Right stmt -> stmt :: rest
+              | Core_kernel.Std.Either.First (pos, decl) -> [ ParseTree(pos, decl (to_block pos rest)) ]
+              | Core_kernel.Std.Either.Second stmt -> stmt :: rest
             )
       in
       to_block $startpos nested_decls }
 
 stmt_or_decl: 
-  | decl { Left $1 }
-  | stmt { Right $1 }
+  | decl { Core_kernel.Std.Either.First $1 }
+  | stmt { Core_kernel.Std.Either.Second $1 }
 
 
 decl: 
@@ -181,8 +180,8 @@ str:  raw_str  { ($startpos, $1) }
 
 
 raw_cmd:
-  | raw_str { Left $1 }
-  | QUOTED  { Right $1 }
+  | raw_str { Core_kernel.Std.Either.First $1 }
+  | QUOTED  { Core_kernel.Std.Either.Second $1 }
 
 raw_str:
   | IDENTIFIER { $1 }

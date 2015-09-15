@@ -1,3 +1,4 @@
+module B = Bytes
 open Core_kernel.Std
 
 open Lexing
@@ -25,9 +26,9 @@ let skip_utf8_BOM chan =
   let bom = "\xEF\xBB\xBF" in
   let bom_len = String.length bom in
   let orig_pos = In_channel.pos chan in
-  let buf = Bytes.make bom_len '\x00' in
+  let buf = B.make bom_len '\x00' in
   let n = In_channel.input chan ~buf ~pos:0 ~len:bom_len in
-  if not (n = bom_len && String.equal bom (Bytes.to_string buf)) then
+  if not (n = bom_len && String.equal bom (B.to_string buf)) then
     In_channel.seek chan orig_pos
 
 

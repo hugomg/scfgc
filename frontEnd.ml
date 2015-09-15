@@ -70,8 +70,8 @@ let bind_names parse_tree = with_errors (fun error ->
        * are potentially an alias call *)
       let cmd =
         match name with
-        | Either.Right s -> Cmd_Dyn (interpolate_string pos s)
-        | Either.Left s ->
+        | Either.Second s -> Cmd_Dyn (interpolate_string pos s)
+        | Either.First s ->
           let ip = interpolate_string pos s in
           match ip with
           | Interpolation.I(s, []) -> Cmd_Const s
